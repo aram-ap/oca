@@ -22,7 +22,7 @@ Everything runs on a single ASUS Ascent GX10 (NVIDIA GB10, 128 GB unified memory
    - [Command check gate](#46-command-check-gate)
    - [Backup system](#47-backup-system)
    - [Run executor](#48-run-executor)
-   - [Slack integration](#49-slack-integration)
+   - [Ticketing integrations (Jira, Slack)](#49-ticketing-integrations-jira-slack)
    - [Frontend portal](#410-frontend-portal)
 5. [Incident lifecycle](#5-incident-lifecycle)
 6. [Data model](#6-data-model)
@@ -40,9 +40,9 @@ Everything runs on a single ASUS Ascent GX10 (NVIDIA GB10, 128 GB unified memory
 
 ## 1. Why local
 
-When production goes down, engineers routinely paste some of their company's most sensitive data — source code, logs, config, architecture, security findings — into cloud AI services to get help. OCE removes that dependency entirely.
+When production goes down, engineers routinely paste some of their company's most sensitive data — source code, logs, config, architecture, security findings — into cloud AI services to get help. OCA removes that dependency entirely.
 
-| Reason      | What it means for OCE                                                                 |
+| Reason      | What it means for OCA                                                                 |
 | ----------- | ------------------------------------------------------------------------------------- |
 | **Privacy** | Source code, logs, credentials, telemetry, and vulnerabilities never leave the box.   |
 | **Latency** | Agents react to an incident immediately — no API round trips.                         |
@@ -59,7 +59,10 @@ Model                         NVIDIA Nemotron (via Ollama)
 Inference                     100% LOCAL
 Cloud LLM requests            0
 Infrastructure data uploaded  0 bytes
+Ticketing sync (Jira)         self-hosted · 0 bytes external     ← or "metadata only · 1.2 KB" if Jira Cloud
 ```
+
+The last line exists so the panel stays honest when an external ticketing system is connected: ticket IDs and status go out, infrastructure data never does (see [§4.9](#49-ticketing-integrations-jira-slack)).
 
 ---
 
@@ -70,7 +73,8 @@ Infrastructure data uploaded  0 bytes
 3. **Prove it before you ship it.** A candidate fix must reproduce the incident and then resolve it in an isolated sandbox before it is eligible for deployment.
 4. **Always have a way back.** A backup is taken before every change, and every deployment can be restored from the dashboard.
 5. **One model, three real agents.** Investigator, Engineer, and Guardian share a single locally served Nemotron model, but each has its own system prompt, context, tool permissions, and bounded observe–act agent loop. A prompt alone is not an agent.
-6. **The API is the product.** The frontend portal is just one client. Health scripts, Slack, the LLM agents, and any external tools all talk to the same Main Process API, so local and non-local interfaces are both supported.
+6. **The API is the product.** The frontend portal is just one client. Health scripts, Jira, Slack, the LLM agents, and any external tools all talk to the same Main Process API, so local and non-local interfaces are both supported.
+7. **External ticketing is a mirror, not a source of truth.** Jira/Slack can open tickets and receive status, but the local DB owns all state and all evidence. If the ticketing system is unreachable, the pipeline continues and syncs later.
 
 ---
 
@@ -81,10 +85,10 @@ This is the **target architecture**. The agent code lives in the top-level `mode
 ```text
                     ASUS ASCENT GX10 (GB10 · 128 GB unified memory)
 ┌────────────────────────────────────────────────────────────────────────┐
-│ Browser dashboard / health checks / optional Slack / external clients  │
+│ Browser dashboard / health checks / Jira · Slack / external clients    │
 │                              │                                         │
 │                     oce/  Main Process / API  (FastAPI)                │
-│                     Incident state (SQLite) · scheduler · gate         │
+│          Incident state (SQLite) · scheduler · gate · sync outbox      │
 │                              │                                         │
 │                    models/orchestrator.py  (background task)           │
 │                              │                                         │
@@ -139,6 +143,7 @@ Responsibilities:
 - Drive each ticket through the [incident lifecycle](#5-incident-lifecycle) by launching `models.orchestrator` as a background task per ticket.
 - Route every proposed action to the command check gate; never execute anything directly.
 - Append every state change to the ticket's event timeline so the dashboard and logs are always derivable from the DB.
+- Mirror ticket state to external ticketing systems (Jira, Slack) through a retrying outbox, so a ticketing outage never blocks the pipeline.
 
 Implementation: Python, FastAPI, async. **Single process.** The orchestrator is imported and run in-process as a background task; agents reach their tools over HTTP to `localhost` so the same tool code also works when the agent package is run standalone (`python3 -m models.main`) for development.
 
@@ -174,6 +179,7 @@ Initial checks:
 | `endpoint_check`      | HTTP GET on each service's `/health`                                                | non-2xx or timeout                     |
 | `log_error_parse`     | Tails service logs, computes error rate over a sliding window                       | error rate > threshold                 |
 | `metrics_check`       | Queries the Prometheus HTTP API (`/api/v1/query`) for error rate and P95 latency    | value exceeds stored baseline × factor |
+| `jira_ticket_reader`  | Polls Jira with a JQL filter for new incident issues (see §4.9)                     | a new matching issue appears           |
 | `slack_ticket_reader` | Polls a Slack channel for incident reports                                          | a new report message appears           |
 
 The Main Process stores the result of every run in `health_checks` (latest state) and opens a ticket with the triggering `CheckResult` attached as the first event. Thresholds and baselines live in `settings`.
@@ -336,14 +342,73 @@ snapshot → canary → monitor → widen → monitor → 100% → re-run health
 
 For the hackathon, "canary percentages" are visual stages; real traffic splitting can be added with nginx upstream weights if time allows. After the run completes, the health checks re-run. If the triggering check passes, the ticket is resolved; if things are worse, the executor calls Restore and the ticket moves to `rolled_back`.
 
-### 4.9 Slack integration
+### 4.9 Ticketing integrations (Jira, Slack)
 
-Two directions:
+OCA connects to the ticketing systems a company already uses, so an incident can enter from a support ticket and the people watching that ticket see it progress and close. All integrations share one shape, implemented in `oce/integrations/`:
 
-- **Inbound:** `slack_ticket_reader` health check polls a channel; a matching message creates a ticket (`source: slack`).
-- **Outbound:** the Main Process posts ticket state changes (detected, diagnosed, fix proposed, awaiting approval, deployed, resolved) to a channel.
+```python
+class TicketingIntegration:
+    name: str                                   # "jira", "slack"
 
-Stretch goal; the system is fully functional without Slack.
+    # inbound: external ticket → local ticket
+    def poll(self) -> list[InboundTicket]: ...  # run on a timer by the *_ticket_reader check
+    def parse_webhook(self, body) -> InboundTicket | None: ...
+
+    # outbound: local ticket state → external system
+    def on_event(self, ticket, event) -> OutboundMessage | None: ...
+```
+
+Inbound creates a ticket with `source: jira|slack` and an `external_ref`. Outbound messages are written to the `integration_outbox` table and delivered by a background worker with retries. **The pipeline never waits on an external system.**
+
+#### Jira
+
+Jira is the primary integration. Supports **Jira Data Center / Server** (self-hosted, fully local) and **Jira Cloud** (external SaaS). Which one is connected changes what OCA is allowed to send.
+
+**Inbound — Jira issue → OCA ticket**
+
+| Step | Detail                                                                                                                                                   |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Poll | `jira_ticket_reader` runs `settings.jira.jql` every `poll_interval_s` (default 30 s). Example: `project = OPS AND status = Open AND labels = oca`        |
+| Webhook (optional) | `POST /api/integrations/jira/webhook` for Data Center or a reachable Cloud setup. Polling is the default because it needs no inbound exposure.  |
+| Map  | `summary` → `title`; `priority` → `severity` (Highest/High → high, Medium → medium, Low/Lowest → low); `components[0]` or custom field → `service`; `description` → first `ticket_event` (`type: reported`) |
+| Dedupe | `external_ref.key` is unique per ticket; re-polling the same issue is a no-op.                                                                         |
+| Link | OCA posts a comment on the Jira issue: `OCA is investigating. Dashboard: http://<gx10>/tickets/INC-0043` and sets the issue to **In Progress**.         |
+
+A Jira-sourced ticket has no `metrics_at_detect`; the Investigator starts from the description and gathers its own evidence by running the health checks and querying metrics on demand.
+
+**Outbound — OCA ticket → Jira issue**
+
+| Local event            | Jira action                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------------------------ |
+| `detected` (local source, if `jira.create_on_detect`) | Create issue in `jira.project`, label `oca`, link back to dashboard; store `external_ref`. |
+| `diagnosis`            | Comment: one-line root cause + confidence (content per outbound policy below)                    |
+| `awaiting_approval`    | Comment: "Fix validated in sandbox, risk N/100. Awaiting approval on the OCA dashboard: <link>" |
+| `deploying`            | Comment + transition to **In Review** (configurable)                                             |
+| `resolved`             | Comment with MTTR card + transition to **Done**                                                  |
+| `rolled_back` / `denied` | Comment + transition back to **Open**, assign to on-call (configurable)                        |
+
+Transition names are mapped in `settings.jira.status_map` because every Jira workflow is different. Approve/deny stays on the OCA dashboard (authenticated, local); a Jira comment is never an instruction to OCA.
+
+**Outbound data policy (decision D8)** — the part that keeps the local-AI claim true:
+
+| `jira.outbound_detail` | What OCA sends                                                                 | Default for         |
+| ---------------------- | ------------------------------------------------------------------------------ | ------------------- |
+| `minimal`              | Ticket ID, status transitions, dashboard link, MTTR numbers. **No free text from agents.** | Jira Cloud          |
+| `summary`              | `minimal` + the Investigator's root-cause one-liner and the Guardian's risk score | Jira Data Center    |
+| `off`                  | Inbound only; nothing written to Jira                                          | —                   |
+
+Never sent at any level: logs, code, diffs, metrics series, container names beyond the `service` label, sandbox output. Outbound comments are built from templates over whitelisted structured fields, never from raw agent text. Bytes sent to Jira Cloud are counted and shown on the LOCAL AI panel.
+
+**Auth:** Jira personal access token (Data Center) or API token + email (Cloud), stored in `settings.jira` on the box. Client is `httpx` against Jira REST API v2 — no SDK needed.
+
+#### Slack
+
+Same interface, secondary priority:
+
+- **Inbound:** `slack_ticket_reader` polls a channel; a matching message creates a ticket (`source: slack`).
+- **Outbound:** state-change messages to a channel, same `outbound_detail` policy as Jira.
+
+Stretch goal; the system is fully functional with no integrations connected.
 
 ### 4.10 Frontend portal
 
@@ -352,12 +417,14 @@ A web dashboard served by the Main Process. Pages:
 ```
 Login
   └─ Main Dash ─────────────── LOCAL AI panel (hardware, model, 0 cloud requests, 0 bytes uploaded)
-       ├─ Current Tickets      live incident list, timeline per ticket, approve/deny for gated actions
+       ├─ Current Tickets      live incident list, timeline per ticket, approve/deny for gated actions,
+       │                       source badge + Jira key linking to the external issue
        ├─ Past Deployments     every executed action, with evidence → [Restore Backup]
        ├─ Logs Display         ticket events + service logs
        ├─ Overall Sys Health   per-service status from health checks
        │    └─ Health Check Scripts   registered checks, last result, enable/disable
-       └─ Settings             thresholds, baselines, allowlist, require_human_approval, Slack config
+       ├─ Integrations         Jira / Slack connection status, outbox queue, bytes sent, last sync
+       └─ Settings             thresholds, baselines, allowlist, require_human_approval, Jira + Slack config
 ```
 
 The MTTR card shown on a resolved ticket:
@@ -441,14 +508,14 @@ A ticket moves through these states. Each transition appends a `ticket_event`.
      │             │                │                 └ not reproduced / fix failed ─▶ back to investigating
      │             │                └ Engineer
      │             └ Investigator
-     └ health script / Slack / manual
+     └ health script / Jira / Slack / manual
 ```
 
 `awaiting_approval` is skipped when `settings.require_human_approval` is false (decision D3).
 
 | # | State                 | Who                | What happens                                                                              |
 | - | --------------------- | ------------------ | ----------------------------------------------------------------------------------------- |
-| 1 | `detected`            | Health script      | Check fails → ticket created with the `CheckResult` and metric deltas.                    |
+| 1 | `detected`            | Health script / Jira / Slack / human | Check fails → ticket with `CheckResult` and metric deltas; or an external issue is imported with its description as the first event. |
 | 2 | `investigating`       | Investigator       | Investigates with read-only tools; posts findings and a diagnosis to the timeline.        |
 | 3 | `fix_proposed`        | Engineer           | Sandbox spun up; incident reproduced; patch generated and applied in sandbox.             |
 | 4 | `sandbox_validated`   | Sandbox runner     | Load test + tests after the patch; compared against baseline.                             |
@@ -459,7 +526,7 @@ A ticket moves through these states. Each transition appends a `ticket_event`.
 | 9 | `deploying`           | Run executor       | Staged rollout against production with monitoring.                                        |
 | 10| `resolved`            | Health scripts     | Triggering check passes again; MTTR computed.                                             |
 
-A human can intervene at any point from the dashboard (approve a denied action, deny an approved one, or restore a backup).
+A human can intervene at any point from the dashboard (approve a denied action, deny an approved one, or restore a backup). Every transition also emits an outbound message to any linked external ticket (§4.9).
 
 ---
 
@@ -468,7 +535,7 @@ A human can intervene at any point from the dashboard (approve a denied action, 
 ```sql
 tickets
   id            TEXT PK        -- INC-0042
-  source        TEXT           -- health_check | slack | manual
+  source        TEXT           -- health_check | jira | slack | manual
   service       TEXT
   title         TEXT
   status        TEXT           -- see lifecycle
@@ -476,15 +543,27 @@ tickets
   created_at    DATETIME
   resolved_at   DATETIME
   metrics_before JSON          -- baseline snapshot
-  metrics_at_detect JSON       -- what tripped the check
+  metrics_at_detect JSON       -- what tripped the check (NULL for externally reported tickets)
+  external_ref  JSON           -- {"system": "jira", "key": "OPS-123", "url": "...", "last_synced_at": ...} or NULL
 
 ticket_events                  -- the timeline; everything the dashboard shows comes from here
   id            INTEGER PK
   ticket_id     TEXT FK
   ts            DATETIME
-  actor         TEXT           -- health_check | investigator | engineer | guardian | orchestrator | gate | executor | human
-  type          TEXT           -- detected | finding | diagnosis | patch | sandbox_result | review | action_request | gate_decision | human_decision | run | resolved
+  actor         TEXT           -- health_check | jira | slack | investigator | engineer | guardian | orchestrator | gate | executor | human
+  type          TEXT           -- detected | reported | finding | diagnosis | patch | sandbox_result | review | action_request | gate_decision | human_decision | run | resolved | external_sync
   payload       JSON
+
+integration_outbox             -- outbound messages to Jira/Slack; delivered by a background worker with retries
+  id            INTEGER PK
+  ticket_id     TEXT FK
+  target        TEXT           -- jira | slack
+  kind          TEXT           -- create_issue | comment | transition | message
+  payload       JSON           -- already policy-filtered (D8); this is exactly what goes over the wire
+  status        TEXT           -- pending | sent | failed
+  attempts      INTEGER
+  next_attempt  DATETIME
+  bytes_sent    INTEGER        -- feeds the LOCAL AI panel counter
 
 deployments
   id            TEXT PK        -- DEP-0081
@@ -518,7 +597,9 @@ sandbox_runs
 
 settings
   key           TEXT PK
-  value         JSON           -- thresholds, baselines, allowlist path, require_human_approval, slack config, users
+  value         JSON           -- thresholds, baselines, allowlist path, require_human_approval, users,
+                               -- jira: {base_url, auth, project, jql, poll_interval_s, status_map, create_on_detect, outbound_detail}
+                               -- slack: {token, channel, outbound_detail}
 ```
 
 ---
@@ -544,7 +625,11 @@ All JSON endpoints are under `/api`. The browser uses the HTML routes in §4.10 
 | PUT    | `/api/checks/{name}`                 | human               | Enable/disable, change interval                          |
 | GET    | `/api/logs`                          | clients             | Ticket events + service logs                             |
 | GET/PUT | `/api/settings`                     | human               | Thresholds, baselines, Slack, allowlist, approval mode   |
-| GET    | `/api/stats/local-ai`                | dashboard           | Cloud requests (0), bytes uploaded (0), model, hardware  |
+| GET    | `/api/stats/local-ai`                | dashboard           | Cloud requests (0), bytes uploaded (0), ticketing bytes sent, model, hardware |
+| GET    | `/api/integrations`                  | dashboard           | Connection status, outbox depth, last sync per integration |
+| POST   | `/api/integrations/jira/webhook`     | Jira (optional)     | Push alternative to polling; validated by shared secret   |
+| POST   | `/api/integrations/jira/sync`        | human               | Force a poll + outbox flush now                           |
+| POST   | `/api/tickets/{id}/link`             | human               | Link an existing local ticket to a Jira key              |
 
 **Agent tool endpoints** — each `models/tools/*` function maps to one of these. Access is scoped per agent token.
 
@@ -562,7 +647,7 @@ All JSON endpoints are under `/api`. The browser uses the HTML routes in §4.10 
 | GET    | `/api/tools/test-results`       | `review_tools`        |              |          | ✓        |
 | GET    | `/api/tools/sandbox-results`    | `review_tools`        |              |          | ✓        |
 
-**Auth:** a bearer token per client type for the hackathon — `agent-investigator`, `agent-engineer`, `agent-guardian`, `orchestrator`, `health`, `slack`. Tokens are listed in `models/config.py` (agent side) and `settings` (server side). The dashboard uses a session cookie. Permissions are enforced by the server regardless of what the model asks for.
+**Auth:** a bearer token per client type for the hackathon — `agent-investigator`, `agent-engineer`, `agent-guardian`, `orchestrator`, `health`, `jira`, `slack`. Tokens are listed in `models/config.py` (agent side) and `settings` (server side). The dashboard uses a session cookie. Permissions are enforced by the server regardless of what the model asks for.
 
 ---
 
@@ -585,7 +670,7 @@ An earlier design proposed two concurrent request slots (Investigator + Guardian
 
 ## 9. Fake company (`fakeco/`)
 
-The infrastructure OCE monitors. A miniature company in Docker Compose that behaves enough like real internal infrastructure to demonstrate the concept.
+The infrastructure OCA monitors. A miniature company in Docker Compose that behaves enough like real internal infrastructure to demonstrate the concept.
 
 ```
 CUSTOMER ─▶ FRONTEND ─▶ ORDERS API ─▶ POSTGRES
@@ -620,8 +705,10 @@ Healthy baseline: error rate 0.2 %, P95 180 ms. Incident: error rate ~38 %, P95 
 6. Guardian review: risk 8/100, decision `APPROVE`.
 7. Command gate checklist goes green → ticket shows **Awaiting approval** with the full evidence. Presenter clicks **Approve** (the one human action in the demo; can be switched off in Settings to show full autonomy).
 8. Backup taken; run executor deploys in stages.
-9. Health checks pass → **INCIDENT RESOLVED**, MTTR card.
-10. **Optional closer:** disconnect the GX10 from the Internet and re-run. Everything still works.
+9. Health checks pass → **INCIDENT RESOLVED**, MTTR card. The linked Jira issue transitions to Done with the MTTR comment.
+10. **Optional closer:** disconnect the GX10 from the Internet and re-run. Everything still works; Jira updates queue in the outbox and flush when connectivity returns.
+
+**Jira variant** (shows the integration from the other direction): instead of step 2, a support engineer files `OPS-123: "Customers report checkout failing"` in Jira with the `oca` label. Within 30 s it appears in Current Tickets as `INC-0043` with the Jira key, Jira shows "OCA is investigating" + dashboard link, and the flow continues from step 4.
 
 ---
 
@@ -683,7 +770,12 @@ oce/
 │   ├── allowlist.yaml
 │   ├── backup.py
 │   ├── executor.py                # staged rollout + auto-restore
-│   └── slack.py
+│   └── integrations/
+│       ├── base.py                # TicketingIntegration interface, InboundTicket, OutboundMessage
+│       ├── policy.py              # outbound content filter (D8): minimal / summary / off
+│       ├── outbox.py              # background worker: retry delivery, count bytes
+│       ├── jira.py                # JQL polling, webhook parsing, issue create/comment/transition (httpx)
+│       └── slack.py
 └── docs/
 ```
 
@@ -704,6 +796,7 @@ Run the agents standalone from the repo root with `python3 -m models.main` so `m
 | Logs           | Structured JSON to stdout / `docker logs`| Skip Loki unless time allows                                                 |
 | Dashboard      | HTMX + Jinja2 + Alpine.js, Chart.js      | Server-rendered by FastAPI; no Node, no build step, works offline (see §4.10) |
 | Auth           | Local accounts, session cookie           | Must work offline; no external IdP                                           |
+| Ticketing      | Jira REST API v2 via `httpx`; Slack Web API | Mirror only; policy-filtered outbound; outbox so it never blocks (§4.9)   |
 | Load gen       | Small Python script or Locust            |                                                                              |
 
 ---
@@ -712,7 +805,7 @@ Run the agents standalone from the repo root with `python3 -m models.main` so `m
 
 **AI subsystem (`models/`):** Ollama client, bounded agent loop, role prompts, tool clients, agent state, the three agents, orchestration.
 
-**Platform (`oce/`, `fakeco/`):** API, database, dashboard, health checks, gate, backup, executor, sandbox, fakeco, optional Slack.
+**Platform (`oce/`, `fakeco/`):** API, database, dashboard, health checks, gate, backup, executor, sandbox, fakeco, Jira integration, optional Slack.
 
 Both tracks depend on the shared contracts in `oce/schemas.py` (`Ticket`, `TicketEvent`, `ActionRequest`, `CheckResult`, agent output shapes) — agree on those first.
 
@@ -725,8 +818,9 @@ Both tracks depend on the shared contracts in `oce/schemas.py` (`Ticket`, `Ticke
 | **M2** | Health checks + ticket creation + SSE timeline. Inject → ticket appears live on the dashboard.        | A3                 | Planned |
 | **M3** | Gate + allowlist + backup + executor + approve/deny. Manual `POST /api/actions` restores the timeout. | A5, A6             | Planned |
 | **M4** | Sandbox runner with before/after metrics behind `/api/tools/sandbox/*`.                              | A4                 | Planned |
-| **M5** | Remaining dashboard pages; Slack (stretch).                                                          | demo               | Planned |
-| **M6** | End-to-end with all three agents; MTTR card; offline demo.                                           | judging            | Planned |
+| **M5** | Jira integration: inbound polling → ticket, outbound comments/transitions via outbox, policy filter, Integrations page. | demo (Jira variant) | Planned |
+| **M6** | Remaining dashboard pages; Slack (stretch).                                                          | demo               | Planned |
+| **M7** | End-to-end with all three agents; MTTR card; offline demo (outbox flush on reconnect).               | judging            | Planned |
 
 ### AI milestones
 
@@ -762,6 +856,7 @@ Recorded so nobody re-litigates them by accident. Any can be overturned by the t
 | **D5** | **Fully local frontend.** HTMX + Jinja2 + Alpine served by FastAPI; local auth. No Vercel / Supabase / Auth0 (§4.10).                                                                                             |
 | **D6** | **Sequential agent execution first.** Concurrency is an A8 benchmark, not a day-one feature (§8).                                                                                                                 |
 | **D7** | **Naming.** Top-level `models/` is the agent package; platform data contracts live in `oce/schemas.py` to avoid the clash. One root `requirements.txt`.                                                            |
+| **D8** | **External ticketing is mirror-only and policy-filtered.** Jira/Slack never hold evidence and never receive logs, code, diffs, or metrics. Outbound text is templated from whitelisted fields; `outbound_detail` defaults to `minimal` for Jira Cloud, `summary` for self-hosted. Delivery goes through a retrying outbox so an unreachable Jira never blocks the pipeline. Approve/deny is dashboard-only; Jira comments are never instructions. |
 
 ---
 
@@ -772,4 +867,6 @@ Recorded so nobody re-litigates them by accident. Any can be overturned by the t
 - Sandbox isolation details: network, mounts, credentials — what exactly stops a sandbox container reaching production?
 - Real traffic-split canary (nginx weights) or demo-only visual stages?
 - Log source: `docker logs`, shared log file, or a dedicated log system?
+- Jira for the demo: a free Jira Cloud site (easy, but external → `minimal` policy and the panel shows bytes sent) or a self-hosted Jira Data Center trial in Docker on the GX10 (fully local, heavier to set up, ARM64 support to verify)?
+- Which Jira field carries `service`? Component vs. a custom field vs. parsed from the summary.
 - Slack: in the demo or stretch only?
