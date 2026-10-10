@@ -344,6 +344,24 @@ Login
        └─ Settings             thresholds, baselines, allowlist, Slack config
 ```
 
+#### Hosting, data, and auth — decision: fully local
+
+Supabase + Vercel + Auth0 were considered for the dashboard and rejected. All three are cloud services, and the dashboard would contradict the project's core claims:
+
+- **Supabase** would hold tickets, diagnoses, and logs in a cloud Postgres — that *is* the infrastructure data the "0 bytes uploaded" panel says never leaves the box.
+- **Vercel** would host the UI off-box, so the Internet-outage demo would take down OCE's own console.
+- **Auth0** would make login depend on an external service during an outage.
+
+What we use instead, keeping the same developer experience:
+
+| Need            | Cloud option  | Local choice                                                                                         |
+| --------------- | ------------- | ---------------------------------------------------------------------------------------------------- |
+| Dashboard host  | Vercel        | Next.js (or Vite) built and served from the GX10 in a container; static files behind FastAPI/nginx   |
+| Data + realtime | Supabase      | OCE's own REST API (§7) + a WebSocket/SSE stream of `ticket_events` for live updates                 |
+| Login           | Auth0         | Local admin account(s), hashed password in `settings`, session cookie issued by the API. Stretch: self-hosted Authentik/Keycloak for SSO |
+
+**Remote access (opt-in, off for the demo):** the API supports non-local clients, so a hosted UI could talk to the GX10 over a tunnel for remote operators. It is never the system of record — all state stays in the local DB.
+
 The MTTR card shown on a resolved ticket:
 
 ```
@@ -590,7 +608,8 @@ oce/
 | Infra target   | Docker Compose (multi-arch images)       | fakeco + sandbox                                       |
 | Metrics        | Prometheus + prometheus_client           | Standard, lightweight                                  |
 | Logs           | Structured JSON to stdout / `docker logs`| Skip Loki unless time allows                           |
-| Dashboard      | TBD (React/Vite or server-rendered)      | Consumes the REST API only                             |
+| Dashboard      | Next.js or Vite, served from the GX10    | Consumes the REST API only; no cloud hosting (see §4.10)|
+| Auth           | Local accounts, session cookie           | Must work offline; no external IdP                     |
 | Load gen       | Small Python script or Locust            |                                                        |
 
 ---
