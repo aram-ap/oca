@@ -1,8 +1,8 @@
 # OCE — On-Call Engineer
 
-**A fully local autonomous SRE team.** OCE monitors a company's private infrastructure, detects incidents, diagnoses the root cause, develops a fix, proves it in an isolated sandbox, and deploys it under deterministic policy control — without source code, logs, credentials, or infrastructure data ever leaving the machine.
+**A fully local autonomous SRE team (in development).** OCE monitors a company's private infrastructure, detects incidents, diagnoses the root cause, develops a fix, proves it in an isolated sandbox, and deploys it under deterministic policy control — without source code, logs, credentials, or infrastructure data ever leaving the machine.
 
-Everything runs on a single ASUS Ascent GX10 (NVIDIA GB10, 128 GB unified memory) using a locally served NVIDIA Nemotron model.
+Everything runs on a single ASUS Ascent GX10 (NVIDIA GB10, 128 GB unified memory) using Ollama to serve a shared local NVIDIA Nemotron model to three specialized agents.
 
 > **When your infrastructure fails, your AI infrastructure shouldn't fail with it.**
 
@@ -68,65 +68,61 @@ Infrastructure data uploaded  0 bytes
 2. **AI decides what should happen. Deterministic policy decides what AI is allowed to make happen.** The LLM never receives unrestricted shell access. Every action passes through the command check gate, which only runs pre-configured, allowlisted commands.
 3. **Prove it before you ship it.** A candidate fix must reproduce the incident and then resolve it in an isolated sandbox before it is eligible for deployment.
 4. **Always have a way back.** A backup is taken before every change, and every deployment can be restored from the dashboard.
-5. **One model, many agents.** A single locally served Nemotron model plays every agent role. An agent is: the same model + a different system prompt + different context + different tools + different permissions.
+5. **One model, three real agents.** Investigator, Engineer, and Guardian share a single locally served Nemotron model, but each has its own system prompt, context, tool permissions, and bounded observe–act agent loop. A prompt alone is not an agent.
 6. **The API is the product.** The frontend portal is just one client. Health scripts, Slack, the LLM agents, and any external tools all talk to the same Main Process API, so local and non-local interfaces are both supported.
 
 ---
 
 ## 3. System architecture
 
-```
-                              ASUS ASCENT GX10  (everything below runs on this box)
- ┌──────────────────────────────────────────────────────────────────────────────────────┐
- │                                                                                      │
- │   ┌──────────────┐     ┌─────────────┐     ┌──────────────────────────────────┐      │
- │   │ Frontend     │     │ Slack API   │     │ Health status scripts            │      │
- │   │ portal       │     │ (tickets)   │     │  • network endpoint checks       │      │
- │   └──────┬───────┘     └──────┬──────┘     │  • log error-parse checks        │      │
- │          │                    │            │  • Slack ticket reading          │      │
- │   ┌──────┴───────┐            │            └──────────────┬───────────────────┘      │
- │   │ API endpoint │            │                           │                          │
- │   │ (external    │            │                           │                          │
- │   │  clients)    │            │                           │                          │
- │   └──────┬───────┘            │                           │                          │
- │          │                    ▼                           ▼                          │
- │          │           ┌──────────────────────────────────────────┐    ┌───────────┐   │
- │          └──────────▶│           MAIN PROCESS / API             │◀──▶│ Database  │   │
- │                      │  tickets · orchestration · LLM scheduler │    │ (SQLite)  │   │
- │                      └───────┬────────────────┬────────────────┘    └───────────┘   │
- │                              │                │                                      │
- │                              ▼                ▼                                      │
- │                      ┌──────────────┐   ┌─────────────────────────┐                  │
- │                      │  Diag LLM    │   │  SANDBOX                │                  │
- │                      │ (read-only)  │   │  ┌───────────────────┐  │                  │
- │                      └──────┬───────┘   │  │ Solution LLM      │  │                  │
- │                             │           │  │ (edits sandbox    │  │                  │
- │                             ▼           │  │  copy of prod)    │  │                  │
- │                      ┌──────────────┐   │  └───────────────────┘  │                  │
- │                      │  Safety LLM  │◀──┤  before/after metrics   │                  │
- │                      │ (reviews)    │   └─────────────────────────┘                  │
- │                      └──────┬───────┘                                                │
- │                             │ proposed action                                        │
- │                             ▼                                                        │
- │                      ┌──────────────┐    ┌──────────────┐                            │
- │                      │ Command      │───▶│ Backup       │                            │
- │                      │ check gate   │    │ system       │                            │
- │                      │ (allowlist)  │    └──────────────┘                            │
- │                      └──────┬───────┘                                                │
- │                             │ approved                                               │
- │                             ▼                                                        │
- │                      ┌──────────────┐    ┌────────────────────────────────────┐      │
- │                      │ Run          │───▶│ "PRODUCTION"  (fakeco Docker stack)│      │
- │                      │ executor     │    │  frontend · orders-api · pg · redis│      │
- │                      └──────────────┘    └────────────────────────────────────┘      │
- │                                                                                      │
- │   ┌──────────────────────────────────────────────────────────────────────────────┐   │
- │   │ LOCAL NEMOTRON SERVER — one model, shared by Diag / Solution / Safety        │   │
- │   └──────────────────────────────────────────────────────────────────────────────┘   │
- └──────────────────────────────────────────────────────────────────────────────────────┘
+The following is the **target architecture**, not a claim that every component is implemented today. The agent code lives in the top-level `models/` Python package; the company-under-test lives in `fakeco/`.
+
+```text
+                    ASUS ASCENT GX10 (GB10 · 128 GB unified memory)
+┌────────────────────────────────────────────────────────────────────────┐
+│ Browser dashboard / API / health checks / optional Slack integration   │
+│                              │                                         │
+│                     Main Process / API                                 │
+│                              │                                         │
+│                     Incident state (SQLite)                            │
+│                              │                                         │
+│                    models/orchestrator.py                              │
+│                              │                                         │
+│       ┌──────────────────────┼──────────────────────┐                  │
+│       ▼                      ▼                      ▼                  │
+│  INVESTIGATOR            ENGINEER               GUARDIAN              │
+│  Read-only tools         Sandbox-only edits     Review-only tools     │
+│  Logs, metrics, code     Patch, tests           Diff, tests, risk      │
+│       │                      │                      │                  │
+│       └──────────────────────┼──────────────────────┘                  │
+│                              │                                         │
+│                  models/core/agent.py (agent loop)                      │
+│                  models/core/tool_registry.py                           │
+│                              │                                         │
+│               models/core/llm.py → Ollama :11434                       │
+│                              │                                         │
+│                     nemotron3:33b (initial)                            │
+│                                                                        │
+│  Observability       fakeco production       Isolated sandbox         │
+│  Docker / Prometheus     Docker Compose      Docker Compose clone     │
+│                                                                        │
+│  Guardian recommendation → deterministic command gate → backup         │
+│                          → executor → production                       │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-The **Main Process** is the hub. Every other component is either an input to it (health scripts, Slack, frontend, external API), a worker it orchestrates (the three LLM agents, the sandbox), or an effector it drives (gate → backup → run).
+**Control boundaries:** An LLM chooses among registered tools; Python validates arguments, enforces per-agent tool allowlists, and records the results. Investigator cannot write. Engineer can write only to a sandbox worktree. Guardian can review but cannot deploy. The deterministic command gate and executor—not the LLM—control production changes. In the initial implementation, deployment should require explicit human approval.
+
+**Local model inventory observed on the GX10:**
+
+| Ollama model | Approximate disk size | Role |
+| --- | ---: | --- |
+| `nemotron3:33b` | 27 GB | Initial shared model for all three agents |
+| `nemotron-3-super:latest` | 86 GB | Larger Nemotron candidate to benchmark later |
+| `qwen3.6:35b` | 23 GB | Alternative model for evaluation |
+| `gemma4:26b` | 17 GB | Alternative model for evaluation |
+
+Ollama's `/api/tags` confirms these models are installed, **not** that inference or agent tool-calling has been tested successfully. The hackathon's stated Nemotron 3.5 Lightning requirement should be checked against the actual available model/tag with organizers before the final demo.
 
 ---
 
@@ -141,7 +137,7 @@ Responsibilities:
 - Serve the REST API (see [§7](#7-api-reference)) to the frontend, Slack, health scripts, and external clients.
 - Run registered health checks on a timer and open tickets when they fail.
 - Drive each ticket through the [incident lifecycle](#5-incident-lifecycle).
-- Enforce the two-slot LLM scheduler (see [§8](#8-llm-scheduling-and-vram)).
+- Schedule bounded local LLM requests (see [§8](#8-llm-scheduling-and-vram)); begin sequentially.
 - Route every proposed action to the command check gate; never execute anything directly.
 - Append every state change to the ticket's event timeline so the dashboard and logs are always derivable from the DB.
 
@@ -185,44 +181,37 @@ The Main Process stores the result of every run in `health_checks` (latest state
 
 ### 4.4 LLM agents
 
-All three agents are the **same local Nemotron model** with different system prompts, context, tools, and permissions. Tools are Python functions exposed to the model via the Main Process; the model can only call what it is given.
+The AI implementation is contained in `models/` and comprises **three separate tool-using agents**, not just three prompt templates. Each loads a role-specific prompt from `models/prompts/`, configures its permitted tools from `models/tools/`, and uses the shared bounded execution loop in `models/core/agent.py` to repeatedly decide, call a tool, observe results, and either continue or return an output.
 
-| Agent            | Role                                                                                       | Tools (allowed)                                                                 | Forbidden                                    |
-| ---------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- | -------------------------------------------- |
-| **Diag LLM**     | Investigates the ticket: reads logs, metrics, git history, code. Produces a root-cause report with confidence and evidence. | `query_logs()` `query_metrics()` `inspect_git()` `read_code()` | edit anything, deploy, run commands          |
-| **Solution LLM** | Receives diagnosis + code + diff. Generates a candidate fix and applies it **inside the sandbox only**. Runs the load test and reports before/after metrics. | `read_code()` `generate_patch()` `modify_sandbox()` `run_sandbox_test()` | touch production, deploy                     |
-| **Safety LLM**   | Reviews what Diag and Solution produced. Evaluates the diff, test results, and blast radius. Produces a risk score and a *proposed action* for the gate. | `inspect_diff()` `inspect_test_results()` `evaluate_risk()` `propose_action()` | modify the patch, bypass the gate, run anything |
+| Agent | Source + prompt | Responsibilities | Tool access | Forbidden |
+| --- | --- | --- | --- | --- |
+| **Investigator** (formerly Investigator) | `agents/investigator.py` + `prompts/investigator.txt` | Examine Docker logs, Prometheus metrics, container state and relevant code; report suspected root cause with evidence | Read-only `docker_tools`, `prometheus_tools`, `filesystem_tools` | Editing files, commands with side effects, deployment |
+| **Engineer** (formerly Engineer) | `agents/engineer.py` + `prompts/engineer.txt` | Create candidate patches, modify a sandbox copy, run tests and iterate | Read access to relevant code, **sandbox-scoped** `sandbox_tools` | Editing production, deployments, unrestricted shell |
+| **Guardian** (formerly Guardian) | `agents/guardian.py` + `prompts/guardian.txt` | Inspect proposed diff, test evidence, operational/security risk and policy constraints; recommend approve/reject/needs testing | Read-only diff/test-result inspection and risk-review tools | Modifying patches, bypassing gate, deploying |
 
-Diag output (example):
+**Shared implementation:**
 
-```
-ROOT CAUSE
-Deployment #81 reduced database timeout from 3000ms to 100ms.
-Confidence: 96%
-Evidence:
-  ✓ Incident began 7 min after deployment
-  ✓ 92% of failures contain "database request timeout"
-  ✓ DB itself healthy; no CPU/memory saturation
-```
+- `models/config.py` — local model name, Ollama URL and timeouts.
+- `models/core/llm.py` — client for Ollama's local `/api/chat` endpoint.
+- `models/core/agent.py` — bounded tool-call → execution → observation loop, with timeouts and error handling.
+- `models/core/tool_registry.py` — typed tool schemas, argument validation, per-agent allowlists and execution dispatch.
+- `models/core/state.py` — incident context, observations and evidence exchanged between steps.
+- `models/orchestrator.py` — Investigator → Engineer → Guardian handoffs, retries and escalation.
+- `models/main.py` — agent subsystem entry point.
 
-Safety output (example):
+A **shared model does not mean shared permissions**: each agent has its own prompt, execution history, and allowed tools. Tool permissions are enforced in code and infrastructure, not only in system prompts. Tool outputs such as logs and repository contents are untrusted data and must not be treated as instructions.
 
-```
-RELEASE REVIEW
-Files changed 1   Lines changed 1
-DB migration NO   Auth affected NO   Public API affected NO   Deps changed NO
-Sandbox: incident reproduced ✓  baseline restored ✓
-Risk score: 8/100  LOW
+**Expected agent outputs (planned contracts):**
 
-PROPOSED ACTION
-  deploy_patch(incident="INC-0042", patch="FIX-001")
-```
+- Investigator: structured diagnosis, evidence references, confidence and unresolved questions.
+- Engineer: proposed patch/diff, sandbox reproduction evidence, test commands and before/after results.
+- Guardian: risk analysis, policy violations, decision (`APPROVE`, `REJECT`, `NEEDS_TESTING`) and justification. An `APPROVE` is advisory, **not** permission to deploy.
 
-The Safety LLM's output is a *request*, not a command. It goes to the gate.
+The sandbox, command gate, backup and executor described below are separate components. The directory structure is already created; the agent loops, tool implementations, state persistence and integrations must still be built and tested.
 
 ### 4.5 Sandbox
 
-An isolated copy of production where the Solution LLM works and where fixes are proven.
+An isolated copy of production where the Engineer works and where fixes are proven.
 
 Mechanism:
 
@@ -230,7 +219,7 @@ Mechanism:
 2. Start a second Docker Compose project (`docker compose -p sandbox`) from that worktree on separate ports / network.
 3. Inject the same failure that production is experiencing (replay the bad config/commit).
 4. Run the load generator → record **BEFORE** metrics. The incident must reproduce, or the diagnosis is sent back to Diag.
-5. Solution LLM applies its patch via `modify_sandbox()`.
+5. Engineer applies its patch via `modify_sandbox()`.
 6. Run the load generator again → record **AFTER** metrics. Run the test suite.
 7. Compare AFTER against the stored healthy baseline. All of this is attached to the ticket as evidence.
 
@@ -241,7 +230,7 @@ P95              180 ms        2188 ms        186 ms ✓
 Tests            PASS          —              PASS   ✓
 ```
 
-The sandbox is torn down after the ticket closes. The Solution LLM has no network path to the production stack.
+The sandbox is torn down after the ticket closes. The Engineer has no network path to the production stack.
 
 ### 4.6 Command check gate
 
@@ -253,7 +242,7 @@ Every action request has the shape:
 {
   "action": "deploy_patch",
   "args": { "incident": "INC-0042", "patch": "FIX-001" },
-  "requested_by": "safety_llm",
+  "requested_by": "guardian",
   "evidence": { "sandbox_run_id": "...", "risk_score": 8 }
 }
 ```
@@ -421,8 +410,8 @@ A ticket moves through these states. Each transition appends a `ticket_event`.
      │             │                │                 │               │           │            │
      │             │                │                 │               │           └ DENIED ──▶ awaiting_human
      │             │                │                 └ not reproduced / fix failed ──▶ back to investigating
-     │             │                └ Solution LLM                                      (max N attempts)
-     │             └ Diag LLM (+ Safety LLM)
+     │             │                └ Engineer                                      (max N attempts)
+     │             └ Investigator (+ Guardian)
      └ health script / Slack / manual
                                                                                  post-deploy health worse ──▶ rolled_back
 ```
@@ -432,10 +421,10 @@ Step by step:
 | # | State                 | Who                   | What happens                                                                 |
 | - | --------------------- | --------------------- | ---------------------------------------------------------------------------- |
 | 1 | `detected`            | Health script         | Check fails → ticket created with the `CheckResult` and metric deltas.       |
-| 2 | `investigating`       | Diag LLM + Safety LLM | Diag investigates with read-only tools; Safety reviews the diagnosis.        |
-| 3 | `fix_proposed`        | Solution LLM          | Sandbox spun up; incident reproduced; patch generated and applied in sandbox.|
+| 2 | `investigating`       | Investigator + Guardian | Diag investigates with read-only tools; Safety reviews the diagnosis.        |
+| 3 | `fix_proposed`        | Engineer          | Sandbox spun up; incident reproduced; patch generated and applied in sandbox.|
 | 4 | `sandbox_validated`   | Sandbox runner        | Load test + tests after the patch; compared against baseline.                |
-| 5 | `reviewed`            | Safety LLM            | Risk score + proposed action produced.                                       |
+| 5 | `reviewed`            | Guardian            | Risk score + proposed action produced.                                       |
 | 6 | `approved` / `denied` | Command check gate    | Policy checks; backup taken on approval.                                     |
 | 7 | `deploying`           | Run executor          | Staged rollout against production with monitoring.                           |
 | 8 | `resolved`            | Health scripts        | Triggering check passes again; MTTR computed.                                |
@@ -463,7 +452,7 @@ ticket_events                  -- the timeline; everything the dashboard shows c
   id            INTEGER PK
   ticket_id     TEXT FK
   ts            DATETIME
-  actor         TEXT           -- health_check | diag_llm | solution_llm | safety_llm | gate | executor | human
+  actor         TEXT           -- health_check | investigator | engineer | guardian | gate | executor | human
   type          TEXT           -- detected | finding | diagnosis | patch | sandbox_result | review | gate_decision | run | resolved
   payload       JSON
 
@@ -517,7 +506,7 @@ All components (frontend, Slack, health scripts, LLM agents, external tools) use
 | POST   | `/tickets/{id}/events`           | LLM agents         | Append a finding / diagnosis / patch / review       |
 | POST   | `/tickets/{id}/approve`          | human              | Approve a gated action                              |
 | POST   | `/tickets/{id}/deny`             | human              | Deny a gated action                                 |
-| POST   | `/actions`                       | Safety LLM         | Submit a proposed action → command check gate       |
+| POST   | `/actions`                       | Guardian         | Submit a proposed action → command check gate       |
 | GET    | `/deployments`                   | frontend           | Past deployments with evidence                      |
 | POST   | `/deployments/{id}/restore`      | frontend, executor | Restore from that deployment's backup               |
 | GET    | `/checks`                        | frontend           | Registered health checks and last results           |
@@ -546,16 +535,22 @@ Auth: a simple bearer token per client type for the hackathon (frontend, agent-d
 
 ## 8. LLM scheduling and VRAM
 
-The GX10 has limited VRAM/processing for concurrent inference. Constraint from the design: **at most 2 LLM processes at once.** The pipeline is built around two pairs:
+**Current serving choice:** Ollama at `http://localhost:11434`; the Python client uses `POST /api/chat` with `model: "nemotron3:33b"`. Check the live model with `ollama ps`, and send a short test request before connecting any agents.
 
+All three agent roles **share one loaded model** rather than running three copies. Tool calls and role-specific conversation contexts differentiate the agents. For the initial implementation, process agent requests sequentially; only introduce concurrent inference after measuring memory use, context sizes, response latency and Ollama behavior on the GX10.
+
+The earlier design proposed two simultaneous request slots (Investigator + Guardian, then Engineer + Guardian). This remains an **optimization to benchmark**, not a verified memory constraint or existing scheduler. A bounded semaphore and request queue can be introduced in the orchestrator when justified by measurements.
+
+Helpful verification commands on the GX10:
+
+```bash
+ollama list
+ollama ps
+curl http://localhost:11434/api/tags
+ollama run nemotron3:33b "Reply with READY."
 ```
-Phase A:  Safety LLM  +  Diag LLM        (investigate, review diagnosis)
-Phase B:  Safety LLM  +  Solution LLM    (fix in sandbox, review fix)
-```
 
-The Main Process implements this as a two-slot semaphore around LLM work. The Safety LLM holds one slot across both phases; the second slot is handed from Diag to Solution.
-
-> **Note:** if all three agents are one Nemotron model served by a single server (vLLM / NIM), the model is loaded **once** and the limit is on concurrent *requests*, not loaded models. In that case the semaphore is about request concurrency and context size, and the pairing above is a scheduling preference rather than a hard VRAM limit. Confirm with whoever owns model serving.
+The model name `nemotron3:33b` should not be relabeled "Nemotron 3.5 Lightning" without confirming the actual model identity and event eligibility.
 
 ---
 
@@ -591,9 +586,9 @@ Healthy baseline: error rate 0.2 %, P95 180 ms. Incident: error rate ~38 %, P95 
 1. Dashboard shows fakeco healthy. LOCAL AI panel: 0 cloud requests, 0 bytes uploaded.
 2. Press **INJECT INCIDENT** (`inject_incident.sh`). Error rate jumps. **Nobody touches anything.**
 3. Health script trips → `INC-0042` appears in Current Tickets within seconds.
-4. Diag LLM findings stream into the ticket timeline: log investigation, metrics, deployment history → root cause with confidence and evidence.
-5. Sandbox spins up, reproduces the incident (BEFORE metrics), Solution LLM applies the patch, AFTER metrics match baseline.
-6. Safety LLM review: risk 8/100, proposed action `deploy_patch`.
+4. Investigator findings stream into the ticket timeline: log investigation, metrics, deployment history → root cause with confidence and evidence.
+5. Sandbox spins up, reproduces the incident (BEFORE metrics), Engineer applies the patch, AFTER metrics match baseline.
+6. Guardian review: risk 8/100, proposed action `deploy_patch`.
 7. Command gate checklist goes green; backup taken; run executor deploys in stages.
 8. Health checks pass → **INCIDENT RESOLVED**, MTTR card.
 9. **Optional closer:** disconnect the GX10 from the Internet mid-demo and re-run. Everything still works.
@@ -602,36 +597,59 @@ Healthy baseline: error rate 0.2 %, P95 180 ms. Incident: error rate ~38 %, P95 
 
 ## 11. Repository layout
 
-```
+The `models/` tree below matches the current VS Code/SSH folder setup. Other directories and contents are shown as **planned** unless already implemented by the respective project owner.
+
+```text
 oce/
 ├── README.md
-├── fakeco/                 # the fake company being monitored
-│   ├── docker-compose.yml
-│   ├── orders-api/
-│   ├── frontend/
-│   ├── loadgen/
-│   ├── prometheus/
-│   ├── inject_incident.sh
-│   └── reset.sh
-├── oce/                    # the on-call engineer
-│   ├── main.py             # FastAPI app, scheduler, orchestrator
-│   ├── models.py           # Ticket, TicketEvent, Deployment, ActionRequest, CheckResult …
-│   ├── db.py               # SQLite access layer
-│   ├── api/                # JSON routes under /api (tickets, deployments, checks, actions, tools, settings)
-│   ├── web/                # HTML routes for the dashboard (HTMX fragments + full pages)
-│   ├── templates/          # Jinja2: base.html, pages/, fragments/
-│   ├── static/             # vendored htmx.js, alpine.js, chart.js, css
-│   ├── checks/             # health check plug-ins
-│   ├── agents/             # Diag / Solution / Safety prompts + tool bindings (AI team)
-│   ├── llm.py              # Nemotron client + 2-slot scheduler
-│   ├── sandbox.py          # worktree + compose -p sandbox + load test
-│   ├── gate.py             # command check gate (policy engine)
-│   ├── allowlist.yaml      # named, parameterised actions
+├── fakeco/                       # existing demo-company area; service content evolves
+│   └── ...                       # production Docker stack, load generator, incident scripts
+├── models/                       # current multi-agent Python package
+│   ├── __init__.py
+│   ├── config.py                  # model endpoint and runtime configuration
+│   ├── requirements.txt
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── llm.py                 # Ollama API client
+│   │   ├── agent.py               # shared agent loop
+│   │   ├── tool_registry.py       # allowed tool schemas and dispatcher
+│   │   └── state.py               # incident and agent context
+│   ├── agents/
+│   │   ├── __init__.py
+│   │   ├── investigator.py        # evidence-gathering agent
+│   │   ├── engineer.py            # sandbox remediation agent
+│   │   └── guardian.py            # independent safety reviewer
+│   ├── prompts/
+│   │   ├── investigator.txt
+│   │   ├── engineer.txt
+│   │   └── guardian.txt
+│   ├── tools/
+│   │   ├── __init__.py
+│   │   ├── docker_tools.py        # logs and container inspection
+│   │   ├── filesystem_tools.py    # guarded code/config reads
+│   │   ├── prometheus_tools.py    # metrics queries
+│   │   └── sandbox_tools.py       # sandbox patch/test operations
+│   ├── orchestrator.py            # incident handoffs and retries
+│   └── main.py                    # entry point for agents
+├── oce/                           # planned Main Process/API implementation
+│   ├── main.py                    # FastAPI and scheduling
+│   ├── models.py                  # API/data contracts (distinct from top-level models/)
+│   ├── db.py
+│   ├── api/
+│   ├── web/
+│   ├── templates/
+│   ├── static/
+│   ├── checks/
+│   ├── sandbox.py
+│   ├── gate.py
+│   ├── allowlist.yaml
 │   ├── backup.py
-│   ├── executor.py         # run executor + staged rollout + auto-restore
+│   ├── executor.py
 │   └── slack.py
-└── docs/
+└── docs/                         # planned supporting documentation
 ```
+
+**Running the Python package (once implemented):** from the repository root, use `python3 -m models.main` so `models.core` and `models.agents` imports resolve consistently. A successful Ollama API check does not, by itself, establish that these Python modules are implemented.
 
 ---
 
@@ -640,8 +658,8 @@ oce/
 | Layer          | Choice                                   | Why                                                   |
 | -------------- | ---------------------------------------- | ----------------------------------------------------- |
 | Hardware       | ASUS Ascent GX10 (GB10, ARM64, 128 GB)   | Competition platform; everything must be ARM-compatible|
-| Model          | NVIDIA Nemotron (local)                  | Preloaded on the box; single shared model              |
-| Model serving  | vLLM / NIM, OpenAI-compatible endpoint   | TBD by AI team                                         |
+| Model          | `nemotron3:33b` (initial, local)         | One shared model across three agent roles              |
+| Model serving  | Ollama, local `/api/chat` endpoint       | Confirmed installed; inference still needs validation |
 | Backend        | Python 3.12, FastAPI, SQLite             | Fast to build, async, ARM-friendly                     |
 | Infra target   | Docker Compose (multi-arch images)       | fakeco + sandbox                                       |
 | Metrics        | Prometheus + prometheus_client           | Standard, lightweight                                  |
@@ -654,32 +672,33 @@ oce/
 
 ## 13. Work split and roadmap
 
-**Non-AI system (this track):** Main Process/API, DB, health scripts, gate, backup, executor, sandbox runner, Slack, fakeco.
-**AI (teammates):** Nemotron serving, agent prompts, tool bindings, agent outputs.
+**AI subsystem (`models/`):** Own the shared Ollama client, bounded agent loop, role prompts, guarded tool integrations, agent state, three agents, and orchestration.
 
-Build order — each milestone is demoable on its own:
+**Platform (`oce/`, `fakeco/`):** Own the API, database, health checks, policy gate, backups, executor, isolated sandbox, dashboard and optional Slack integration. Agree on common event, evidence and tool contracts early.
 
-| Milestone | Deliverable                                                                                 | Unblocks            |
-| --------- | ------------------------------------------------------------------------------------------- | ------------------- |
-| **M0**    | `models.py` contracts + stub API returning canned data                                       | AI team, dashboard  |
-| **M1**    | `fakeco/` up with loadgen; `inject_incident.sh` visibly raises error rate in Prometheus       | everything          |
-| **M2**    | Health checks + ticket creation. Inject → ticket appears.                                    | Diag agent          |
-| **M3**    | Gate + allowlist + backup + executor. Manual `POST /actions` restores the timeout.            | Safety agent        |
-| **M4**    | Sandbox runner with before/after metrics.                                                    | Solution agent      |
-| **M5**    | Dashboard pages against the real API; Slack.                                                 | demo                |
-| **M6**    | End-to-end run with all three agents; MTTR card; offline demo.                               | judging             |
+| Stage | Deliverable | Status |
+| --- | --- | --- |
+| **A0** | Create `models/` structure and discover installed Ollama models | Folder setup created; model tags confirmed |
+| **A1** | Test `nemotron3:33b` inference, implement `config.py` and `core/llm.py` | Next |
+| **A2** | Implement tool registry and bounded tool-calling agent loop | Planned |
+| **A3** | Investigator: Docker logs, container state, metrics and read-only diagnosis | Planned |
+| **A4** | Engineer: sandbox-scoped patching, reproduction and test iteration | Planned |
+| **A5** | Guardian: evidence review, risk evaluation and advisory decision | Planned |
+| **A6** | Orchestrator: structured handoffs, incident state and audit trail | Planned |
+| **A7** | Integrate with fakeco, API, gate, backup, executor and dashboard | Planned |
+| **A8** | End-to-end incident demo, latency profiling, offline and safety testing | Planned |
 
-Early checks:
-
-- Test on the GX10 early — all images must be ARM64.
-- Agree on `ActionRequest` and the agent tool signatures in M0 before the AI team writes prompts.
+**Early integration contracts:** Agree on structured Investigator diagnosis, Engineer patch/test evidence, Guardian review, and command gate action request formats. Do not allow arbitrary shell commands or production filesystem writes through agent tools.
 
 ---
 
 ## 14. Open questions
 
-- Is Nemotron served as one model (concurrency limit) or loaded per agent (VRAM limit)? Affects [§8](#8-llm-scheduling-and-vram).
-- Real traffic-split canary (nginx weights) or visual stages only?
-- Does the demo include Slack, or is it stretch?
-- Log source: `docker logs` scraping vs. a shared log file vs. Loki.
-- Human-in-the-loop: fully autonomous for the demo, or require a dashboard approval click before deploy?
+- Does the competition specifically require Nemotron 3.5 Lightning, and does any installed Ollama tag satisfy that requirement?
+- How many concurrent model requests can Ollama serve reliably on this GX10 at the desired context length?
+- What concrete API/data schemas will connect the `models/` orchestrator to the Main Process and incident database?
+- How will sandbox isolation be enforced at the container, network, mount and credential levels?
+- How will Guardian's advisory recommendation translate to a deterministic gate decision and human approval?
+- Real traffic-split canary or demo-only visual stages?
+- Slack integration in the initial demo or as a stretch goal?
+- Log source: `docker logs`, shared log file, or a dedicated log system?
