@@ -2,7 +2,7 @@
 
 **A fully local autonomous SRE team (in development).** OCE monitors a company's private infrastructure, detects incidents, diagnoses the root cause, develops a fix, proves it in an isolated sandbox, and deploys it under deterministic policy control — without source code, logs, credentials, or infrastructure data ever leaving the machine.
 
-Everything runs on a single ASUS Ascent GX10 (NVIDIA GB10, 128 GB unified memory) using Ollama to serve a shared local NVIDIA Nemotron model to three specialized agents.
+Everything runs on a single ASUS Ascent GX10 (NVIDIA GB10, 128 GB unified memory) using Ollama to serve one shared local Nemotron model to three specialized agents.
 
 > **When your infrastructure fails, your AI infrastructure shouldn't fail with it.**
 
@@ -27,13 +27,14 @@ Everything runs on a single ASUS Ascent GX10 (NVIDIA GB10, 128 GB unified memory
 5. [Incident lifecycle](#5-incident-lifecycle)
 6. [Data model](#6-data-model)
 7. [API reference](#7-api-reference)
-8. [LLM scheduling and VRAM](#8-llm-scheduling-and-vram)
+8. [LLM serving and scheduling](#8-llm-serving-and-scheduling)
 9. [Fake company (`fakeco/`)](#9-fake-company-fakeco)
 10. [Demo flow](#10-demo-flow)
 11. [Repository layout](#11-repository-layout)
 12. [Tech stack](#12-tech-stack)
 13. [Work split and roadmap](#13-work-split-and-roadmap)
-14. [Open questions](#14-open-questions)
+14. [Decisions](#14-decisions)
+15. [Open questions](#15-open-questions)
 
 ---
 
@@ -54,7 +55,7 @@ The dashboard displays this prominently:
 ```
 LOCAL AI
 Hardware                      ASUS Ascent GX10
-Model                         NVIDIA Nemotron
+Model                         NVIDIA Nemotron (via Ollama)
 Inference                     100% LOCAL
 Cloud LLM requests            0
 Infrastructure data uploaded  0 bytes
@@ -75,18 +76,17 @@ Infrastructure data uploaded  0 bytes
 
 ## 3. System architecture
 
-The following is the **target architecture**, not a claim that every component is implemented today. The agent code lives in the top-level `models/` Python package; the company-under-test lives in `fakeco/`.
+This is the **target architecture**. The agent code lives in the top-level `models/` Python package (structure created, implementation in progress); the platform code lives in `oce/` (planned); the company-under-test lives in `fakeco/`.
 
 ```text
                     ASUS ASCENT GX10 (GB10 · 128 GB unified memory)
 ┌────────────────────────────────────────────────────────────────────────┐
-│ Browser dashboard / API / health checks / optional Slack integration   │
+│ Browser dashboard / health checks / optional Slack / external clients  │
 │                              │                                         │
-│                     Main Process / API                                 │
+│                     oce/  Main Process / API  (FastAPI)                │
+│                     Incident state (SQLite) · scheduler · gate         │
 │                              │                                         │
-│                     Incident state (SQLite)                            │
-│                              │                                         │
-│                    models/orchestrator.py                              │
+│                    models/orchestrator.py  (background task)           │
 │                              │                                         │
 │       ┌──────────────────────┼──────────────────────┐                  │
 │       ▼                      ▼                      ▼                  │
@@ -98,31 +98,31 @@ The following is the **target architecture**, not a claim that every component i
 │                              │                                         │
 │                  models/core/agent.py (agent loop)                      │
 │                  models/core/tool_registry.py                           │
+│                  models/tools/*  → HTTP → oce /api/tools/*              │
 │                              │                                         │
 │               models/core/llm.py → Ollama :11434                       │
-│                              │                                         │
 │                     nemotron3:33b (initial)                            │
 │                                                                        │
 │  Observability       fakeco production       Isolated sandbox         │
 │  Docker / Prometheus     Docker Compose      Docker Compose clone     │
 │                                                                        │
-│  Guardian recommendation → deterministic command gate → backup         │
-│                          → executor → production                       │
+│  Guardian review → orchestrator → command gate → (human) → backup      │
+│                                   → executor → production              │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Control boundaries:** An LLM chooses among registered tools; Python validates arguments, enforces per-agent tool allowlists, and records the results. Investigator cannot write. Engineer can write only to a sandbox worktree. Guardian can review but cannot deploy. The deterministic command gate and executor—not the LLM—control production changes. In the initial implementation, deployment should require explicit human approval.
+**Control boundaries:** An LLM chooses among registered tools; Python validates arguments, enforces per-agent tool allowlists, and records the results. Investigator cannot write. Engineer can write only to a sandbox worktree. Guardian can review but cannot deploy. The deterministic command gate and executor — not the LLM — control production changes, and by default a human approves each deployment from the dashboard (see [§14](#14-decisions)).
 
-**Local model inventory observed on the GX10:**
+**Local model inventory observed on the GX10** (`ollama list`):
 
-| Ollama model | Approximate disk size | Role |
-| --- | ---: | --- |
-| `nemotron3:33b` | 27 GB | Initial shared model for all three agents |
-| `nemotron-3-super:latest` | 86 GB | Larger Nemotron candidate to benchmark later |
-| `qwen3.6:35b` | 23 GB | Alternative model for evaluation |
-| `gemma4:26b` | 17 GB | Alternative model for evaluation |
+| Ollama model              | Approx. disk size | Role                                        |
+| ------------------------- | ----------------: | ------------------------------------------- |
+| `nemotron3:33b`           |             27 GB | Initial shared model for all three agents   |
+| `nemotron-3-super:latest` |             86 GB | Larger Nemotron candidate to benchmark later |
+| `qwen3.6:35b`             |             23 GB | Alternative model for evaluation            |
+| `gemma4:26b`              |             17 GB | Alternative model for evaluation            |
 
-Ollama's `/api/tags` confirms these models are installed, **not** that inference or agent tool-calling has been tested successfully. The hackathon's stated Nemotron 3.5 Lightning requirement should be checked against the actual available model/tag with organizers before the final demo.
+Installed ≠ validated: inference and tool-calling with `nemotron3:33b` still need to be tested (roadmap A1).
 
 ---
 
@@ -130,18 +130,17 @@ Ollama's `/api/tags` confirms these models are installed, **not** that inference
 
 ### 4.1 Main Process / API
 
-The central service. Owns the database, exposes the REST API, runs the health-check scheduler, orchestrates the incident pipeline, and schedules LLM work.
+The central service. Owns the database, exposes the REST API, serves the dashboard, runs the health-check scheduler, orchestrates the incident pipeline, and hosts the command gate.
 
 Responsibilities:
 
-- Serve the REST API (see [§7](#7-api-reference)) to the frontend, Slack, health scripts, and external clients.
+- Serve the JSON API under `/api` (see [§7](#7-api-reference)) to Slack, health scripts, agents, and external clients, and the HTML dashboard at `/` (see [§4.10](#410-frontend-portal)).
 - Run registered health checks on a timer and open tickets when they fail.
-- Drive each ticket through the [incident lifecycle](#5-incident-lifecycle).
-- Schedule bounded local LLM requests (see [§8](#8-llm-scheduling-and-vram)); begin sequentially.
+- Drive each ticket through the [incident lifecycle](#5-incident-lifecycle) by launching `models.orchestrator` as a background task per ticket.
 - Route every proposed action to the command check gate; never execute anything directly.
 - Append every state change to the ticket's event timeline so the dashboard and logs are always derivable from the DB.
 
-Implementation: Python, FastAPI, async. Single process; background tasks for the scheduler and pipeline.
+Implementation: Python, FastAPI, async. **Single process.** The orchestrator is imported and run in-process as a background task; agents reach their tools over HTTP to `localhost` so the same tool code also works when the agent package is run standalone (`python3 -m models.main`) for development.
 
 ### 4.2 Database
 
@@ -164,64 +163,90 @@ class HealthCheck:
 class CheckResult:
     ok: bool
     service: str
-    detail: str              # human-readable summary
+    detail: str               # human-readable summary
     metrics: dict[str, float] # e.g. {"error_rate": 0.387, "p95_ms": 2240}
 ```
 
 Initial checks:
 
-| Check                    | What it does                                                                  | Opens a ticket when                   |
-| ------------------------ | ----------------------------------------------------------------------------- | ------------------------------------- |
-| `endpoint_check`         | HTTP GET on each service's `/health`                                          | non-2xx or timeout                    |
-| `log_error_parse`        | Tails service logs, computes error rate over a sliding window                 | error rate > threshold                |
-| `metrics_check`          | Scrapes Prometheus (`/metrics`) for error rate and P95 latency                | value exceeds stored baseline × factor|
-| `slack_ticket_reader`    | Polls a Slack channel for incident reports                                    | a new report message appears          |
+| Check                 | What it does                                                                        | Opens a ticket when                    |
+| --------------------- | ----------------------------------------------------------------------------------- | -------------------------------------- |
+| `endpoint_check`      | HTTP GET on each service's `/health`                                                | non-2xx or timeout                     |
+| `log_error_parse`     | Tails service logs, computes error rate over a sliding window                       | error rate > threshold                 |
+| `metrics_check`       | Queries the Prometheus HTTP API (`/api/v1/query`) for error rate and P95 latency    | value exceeds stored baseline × factor |
+| `slack_ticket_reader` | Polls a Slack channel for incident reports                                          | a new report message appears           |
 
 The Main Process stores the result of every run in `health_checks` (latest state) and opens a ticket with the triggering `CheckResult` attached as the first event. Thresholds and baselines live in `settings`.
 
 ### 4.4 LLM agents
 
-The AI implementation is contained in `models/` and comprises **three separate tool-using agents**, not just three prompt templates. Each loads a role-specific prompt from `models/prompts/`, configures its permitted tools from `models/tools/`, and uses the shared bounded execution loop in `models/core/agent.py` to repeatedly decide, call a tool, observe results, and either continue or return an output.
+The AI implementation is contained in `models/` and comprises **three separate tool-using agents**, not three prompt templates. Each loads a role-specific prompt from `models/prompts/`, is granted a subset of the tools in `models/tools/`, and runs the shared bounded loop in `models/core/agent.py`: decide → call a tool → observe → continue or return.
 
-| Agent | Source + prompt | Responsibilities | Tool access | Forbidden |
-| --- | --- | --- | --- | --- |
-| **Investigator** (formerly Investigator) | `agents/investigator.py` + `prompts/investigator.txt` | Examine Docker logs, Prometheus metrics, container state and relevant code; report suspected root cause with evidence | Read-only `docker_tools`, `prometheus_tools`, `filesystem_tools` | Editing files, commands with side effects, deployment |
-| **Engineer** (formerly Engineer) | `agents/engineer.py` + `prompts/engineer.txt` | Create candidate patches, modify a sandbox copy, run tests and iterate | Read access to relevant code, **sandbox-scoped** `sandbox_tools` | Editing production, deployments, unrestricted shell |
-| **Guardian** (formerly Guardian) | `agents/guardian.py` + `prompts/guardian.txt` | Inspect proposed diff, test evidence, operational/security risk and policy constraints; recommend approve/reject/needs testing | Read-only diff/test-result inspection and risk-review tools | Modifying patches, bypassing gate, deploying |
+| Agent            | Source + prompt                                  | Responsibilities                                                                                          | Tool access                                                         | Forbidden                                            |
+| ---------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------- |
+| **Investigator** | `agents/investigator.py` + `prompts/investigator.txt` | Examine logs, Prometheus metrics, container state, git history, and relevant code; report suspected root cause with evidence | Read-only: `docker_tools`, `prometheus_tools`, `filesystem_tools`, `git_tools` | Editing files, commands with side effects, deployment |
+| **Engineer**     | `agents/engineer.py` + `prompts/engineer.txt`    | Create candidate patches, apply them to the sandbox copy, run load test and tests, iterate               | Read access to code; **sandbox-scoped** `sandbox_tools`             | Editing production, deployments, unrestricted shell  |
+| **Guardian**     | `agents/guardian.py` + `prompts/guardian.txt`    | Inspect proposed diff, test evidence, operational/security risk, and policy constraints; recommend a decision | Read-only: `review_tools` (diff, test results, risk evaluation)      | Modifying patches, calling the gate, deploying       |
+
+**Tool architecture (decision D1):** every `models/tools/*.py` function is a thin client for a Main Process endpoint under `/api/tools/...`. Permissions are enforced twice:
+
+1. `tool_registry.py` decides which tools an agent is *offered* (the model cannot name a tool it was not given).
+2. Each agent runs with its own API token; the Main Process only serves the tool endpoints that token is scoped to ([§7](#7-api-reference)). Even a confused or manipulated agent cannot reach a tool outside its role.
 
 **Shared implementation:**
 
-- `models/config.py` — local model name, Ollama URL and timeouts.
+- `models/config.py` — model name, Ollama URL, Main Process URL, agent tokens, timeouts.
 - `models/core/llm.py` — client for Ollama's local `/api/chat` endpoint.
-- `models/core/agent.py` — bounded tool-call → execution → observation loop, with timeouts and error handling.
-- `models/core/tool_registry.py` — typed tool schemas, argument validation, per-agent allowlists and execution dispatch.
-- `models/core/state.py` — incident context, observations and evidence exchanged between steps.
-- `models/orchestrator.py` — Investigator → Engineer → Guardian handoffs, retries and escalation.
-- `models/main.py` — agent subsystem entry point.
+- `models/core/agent.py` — bounded tool-call → execution → observation loop, with step limits, timeouts, and error handling.
+- `models/core/tool_registry.py` — typed tool schemas, argument validation, per-agent allowlists, dispatch.
+- `models/core/state.py` — incident context, observations, and evidence exchanged between steps.
+- `models/orchestrator.py` — Investigator → Engineer → Guardian handoffs, retries, escalation, and submission of the final `ActionRequest` to the gate (decision D2).
+- `models/main.py` — standalone entry point for running the agents against a ticket during development.
 
-A **shared model does not mean shared permissions**: each agent has its own prompt, execution history, and allowed tools. Tool permissions are enforced in code and infrastructure, not only in system prompts. Tool outputs such as logs and repository contents are untrusted data and must not be treated as instructions.
+A **shared model does not mean shared permissions**: each agent has its own prompt, execution history, and allowed tools. Tool outputs such as logs and repository contents are untrusted data and must not be treated as instructions.
 
-**Expected agent outputs (planned contracts):**
+**Agent output contracts:**
 
-- Investigator: structured diagnosis, evidence references, confidence and unresolved questions.
-- Engineer: proposed patch/diff, sandbox reproduction evidence, test commands and before/after results.
-- Guardian: risk analysis, policy violations, decision (`APPROVE`, `REJECT`, `NEEDS_TESTING`) and justification. An `APPROVE` is advisory, **not** permission to deploy.
+- **Investigator:** structured diagnosis, evidence references, confidence, unresolved questions.
+- **Engineer:** proposed patch/diff, sandbox reproduction evidence, test commands, before/after results.
+- **Guardian:** risk score (0–100), policy concerns, decision (`APPROVE`, `REJECT`, `NEEDS_TESTING`), justification. `APPROVE` is **advisory**; the orchestrator turns it into an `ActionRequest`, and only the gate (and, by default, a human) can approve execution.
 
-The sandbox, command gate, backup and executor described below are separate components. The directory structure is already created; the agent loops, tool implementations, state persistence and integrations must still be built and tested.
+Example Investigator output:
+
+```
+ROOT CAUSE
+Deployment #81 reduced database timeout from 3000ms to 100ms.
+Confidence: 96%
+Evidence:
+  ✓ Incident began 7 min after deployment
+  ✓ 92% of failures contain "database request timeout"
+  ✓ DB itself healthy; no CPU/memory saturation
+```
+
+Example Guardian output:
+
+```
+RELEASE REVIEW
+Files changed 1   Lines changed 1
+DB migration NO   Auth affected NO   Public API affected NO   Deps changed NO
+Sandbox: incident reproduced ✓  baseline restored ✓
+Risk score: 8/100  LOW
+Decision: APPROVE
+```
 
 ### 4.5 Sandbox
 
-An isolated copy of production where the Engineer works and where fixes are proven.
+An isolated copy of production where the Engineer works and where fixes are proven. Managed by `oce/sandbox.py`; the Engineer reaches it only through `sandbox_tools` → `/api/tools/sandbox/*`.
 
 Mechanism:
 
 1. Create a git worktree of the `fakeco/` repo at the currently deployed commit.
-2. Start a second Docker Compose project (`docker compose -p sandbox`) from that worktree on separate ports / network.
-3. Inject the same failure that production is experiencing (replay the bad config/commit).
-4. Run the load generator → record **BEFORE** metrics. The incident must reproduce, or the diagnosis is sent back to Diag.
-5. Engineer applies its patch via `modify_sandbox()`.
+2. Start a second Docker Compose project (`docker compose -p sandbox`) from that worktree on a separate network and ports.
+3. Inject the same failure production is experiencing (replay the bad config/commit).
+4. Run the load generator → record **BEFORE** metrics. The incident must reproduce, or the ticket goes back to the Investigator.
+5. Engineer applies its patch via `sandbox_tools.apply_patch()`.
 6. Run the load generator again → record **AFTER** metrics. Run the test suite.
-7. Compare AFTER against the stored healthy baseline. All of this is attached to the ticket as evidence.
+7. Compare AFTER against the stored healthy baseline. Everything is attached to the ticket as a `sandbox_result` event and a `sandbox_runs` row.
 
 ```
                 BASELINE      BEFORE FIX     AFTER FIX
@@ -230,11 +255,11 @@ P95              180 ms        2188 ms        186 ms ✓
 Tests            PASS          —              PASS   ✓
 ```
 
-The sandbox is torn down after the ticket closes. The Engineer has no network path to the production stack.
+The sandbox is torn down after the ticket closes. The sandbox network has no route to the production stack, and sandbox tools refuse any path outside the worktree.
 
 ### 4.6 Command check gate
 
-The single choke point between AI and the real system. **Deterministic, no LLM.**
+The single choke point between AI and the real system. **Deterministic, no LLM.** Lives in `oce/gate.py`.
 
 Every action request has the shape:
 
@@ -242,8 +267,8 @@ Every action request has the shape:
 {
   "action": "deploy_patch",
   "args": { "incident": "INC-0042", "patch": "FIX-001" },
-  "requested_by": "guardian",
-  "evidence": { "sandbox_run_id": "...", "risk_score": 8 }
+  "requested_by": "orchestrator",
+  "evidence": { "sandbox_run_id": "...", "risk_score": 8, "guardian_decision": "APPROVE" }
 }
 ```
 
@@ -256,12 +281,14 @@ The gate checks, in order:
 │ 3. Args within allowed values?        ✓  │  (e.g. only whitelisted config keys)
 │ 4. Sandbox reproduced + fixed?        ✓  │
 │ 5. Tests passed?                      ✓  │
-│ 6. Risk score below threshold?        ✓  │
-│ 7. Backup taken successfully?         ✓  │  (gate calls Backup system itself)
+│ 6. Guardian decision == APPROVE?      ✓  │
+│ 7. Risk score below threshold?        ✓  │
 │ 8. Not on the blocklist / cooldown?   ✓  │
 └──────────────────────────────────────────┘
-          → APPROVED → Run executor
-          → DENIED   → ticket event + dashboard, waits for human
+   → POLICY PASS → if require_human_approval: awaiting_approval (dashboard button)
+                   else: approved
+   → APPROVED    → backup → run executor
+   → DENIED      → ticket event + dashboard, waits for human
 ```
 
 The allowlist is a YAML file of **named, parameterised commands** — the LLM never writes raw shell:
@@ -279,27 +306,27 @@ actions:
     requires: [backup, sandbox_pass]
   deploy_patch:
     args: { incident: { type: str }, patch: { type: str } }
-    requires: [backup, sandbox_pass, tests_pass, risk_below: 30]
+    requires: [backup, sandbox_pass, tests_pass, guardian_approve, risk_below: 30]
   rollback:
     args: { deployment_id: { type: str } }
     requires: [backup]
 ```
 
-Everything the gate does — approved or denied — is written to `ticket_events` and, for approvals, to `deployments`.
+Everything the gate does — passed, denied, awaiting, approved — is written to `ticket_events`, and approvals to `deployments`.
 
 ### 4.7 Backup system
 
-Called by the gate before any approved action runs. For the hackathon:
+Called by the gate after approval, before the executor runs. For the hackathon:
 
 - Tag the current `fakeco/` commit (`backup/<deployment_id>`).
 - Snapshot the running config (env, compose state) to `backups/<deployment_id>/`.
 - Record the backup reference in `deployments`.
 
-**Restore** = check out the tag, re-apply the snapshot, redeploy. Exposed as `POST /deployments/{id}/restore` and as the **Restore Backup** button on the Past Deployments page. Also triggered automatically if post-deploy health checks get worse.
+**Restore** = check out the tag, re-apply the snapshot, redeploy. Exposed as `POST /api/deployments/{id}/restore` and as the **Restore Backup** button on the Past Deployments page. Also triggered automatically if post-deploy health checks get worse.
 
 ### 4.8 Run executor
 
-Executes an approved action against the production stack. It knows how to perform each allowlisted action (and nothing else).
+Executes an approved action against the production stack. It knows how to perform each allowlisted action and nothing else. Lives in `oce/executor.py`.
 
 Deployment is staged and monitored:
 
@@ -307,7 +334,7 @@ Deployment is staged and monitored:
 snapshot → canary → monitor → widen → monitor → 100% → re-run health checks
 ```
 
-For the hackathon, "canary percentages" are visual stages; real traffic splitting can be added with nginx upstream weights if time allows. After the run completes, the health checks re-run. If the triggering check passes, the ticket is resolved; if things are worse, the executor calls Restore.
+For the hackathon, "canary percentages" are visual stages; real traffic splitting can be added with nginx upstream weights if time allows. After the run completes, the health checks re-run. If the triggering check passes, the ticket is resolved; if things are worse, the executor calls Restore and the ticket moves to `rolled_back`.
 
 ### 4.9 Slack integration
 
@@ -316,11 +343,11 @@ Two directions:
 - **Inbound:** `slack_ticket_reader` health check polls a channel; a matching message creates a ticket (`source: slack`).
 - **Outbound:** the Main Process posts ticket state changes (detected, diagnosed, fix proposed, awaiting approval, deployed, resolved) to a channel.
 
-Optional for the demo; the system is fully functional without Slack.
+Stretch goal; the system is fully functional without Slack.
 
 ### 4.10 Frontend portal
 
-A web dashboard that consumes the REST API. Pages:
+A web dashboard served by the Main Process. Pages:
 
 ```
 Login
@@ -330,62 +357,8 @@ Login
        ├─ Logs Display         ticket events + service logs
        ├─ Overall Sys Health   per-service status from health checks
        │    └─ Health Check Scripts   registered checks, last result, enable/disable
-       └─ Settings             thresholds, baselines, allowlist, Slack config
+       └─ Settings             thresholds, baselines, allowlist, require_human_approval, Slack config
 ```
-
-#### Hosting, data, and auth — decision: fully local
-
-Supabase + Vercel + Auth0 were considered for the dashboard and rejected. All three are cloud services, and the dashboard would contradict the project's core claims:
-
-- **Supabase** would hold tickets, diagnoses, and logs in a cloud Postgres — that *is* the infrastructure data the "0 bytes uploaded" panel says never leaves the box.
-- **Vercel** would host the UI off-box, so the Internet-outage demo would take down OCE's own console.
-- **Auth0** would make login depend on an external service during an outage.
-
-What we use instead:
-
-| Need            | Cloud option  | Local choice                                                                                         |
-| --------------- | ------------- | ---------------------------------------------------------------------------------------------------- |
-| Dashboard host  | Vercel        | Server-rendered by the Main Process itself (Jinja2 templates). No separate frontend service.         |
-| Data + realtime | Supabase      | OCE's own REST API (§7) + an SSE stream of `ticket_events` for live updates                          |
-| Login           | Auth0         | Local admin account(s), hashed password in `settings`, session cookie issued by the API. Stretch: self-hosted Authentik/Keycloak for SSO |
-
-**Remote access (opt-in, off for the demo):** the API supports non-local clients, so a hosted UI could talk to the GX10 over a tunnel for remote operators. It is never the system of record — all state stays in the local DB.
-
-#### Frontend stack: HTMX + Jinja2 + Alpine.js
-
-No SPA framework and **no Node toolchain**. The dashboard is HTML rendered by FastAPI.
-
-| Piece          | Role                                                                                              |
-| -------------- | ------------------------------------------------------------------------------------------------- |
-| **Jinja2**     | Page and fragment templates, rendered by FastAPI. Templates live next to the routes.              |
-| **HTMX**       | Partial page updates (`hx-get`/`hx-post` on buttons, tables, and forms). The SSE extension subscribes to `/tickets/{id}/stream` and swaps new timeline events into the page as agents work. |
-| **Alpine.js**  | Client-side widgets: dropdowns, modals (confirm approve/deny/restore), tabs, toggles.             |
-| **Chart.js**   | Error rate and P95 charts, fed from `/tools/metrics`. Vendored locally.                           |
-| **Pico CSS** or **Tailwind (CLI build, vendored output)** | Styling. Pico needs no build at all.                               |
-
-All JS/CSS is vendored into `oce/static/` so the dashboard works with the Internet disconnected.
-
-Why this fits:
-
-- The pages are mostly tables and detail views (tickets, deployments, logs, health checks) with a few actions. That is what HTMX is built for.
-- Live agent output is the heart of the demo; HTMX SSE gives that in one attribute, no WebSocket client code.
-- The same person owns the API and the UI, so there is no frontend/backend contract to negotiate.
-- One fewer container on the GX10, nothing to build for ARM64.
-
-Route conventions:
-
-```
-GET /                      → redirect to /dash (or /login)
-GET /login, POST /login    → session cookie
-GET /dash                  → full page
-GET /tickets               → full page; with HX-Request header returns only the table fragment
-GET /tickets/{id}          → full page; timeline fragment at /tickets/{id}/timeline
-GET /tickets/{id}/stream   → text/event-stream of rendered timeline rows
-POST /tickets/{id}/approve → returns updated gate-status fragment
-GET /deployments, /logs, /health, /settings → same full-page / fragment pattern
-```
-
-JSON endpoints (§7) stay under `/api/...` for Slack, health scripts, agents, and external clients; the HTML routes above are for the browser.
 
 The MTTR card shown on a resolved ticket:
 
@@ -399,6 +372,59 @@ Deployment      22 s
 MTTR          1m 22s
 ```
 
+#### Hosting, data, and auth — decision: fully local
+
+Supabase + Vercel + Auth0 were considered for the dashboard and rejected. All three are cloud services, and the dashboard would contradict the project's core claims:
+
+- **Supabase** would hold tickets, diagnoses, and logs in a cloud Postgres — that *is* the infrastructure data the "0 bytes uploaded" panel says never leaves the box.
+- **Vercel** would host the UI off-box, so the Internet-outage demo would take down OCE's own console.
+- **Auth0** would make login depend on an external service during an outage.
+
+What we use instead:
+
+| Need            | Cloud option | Local choice                                                                                                                              |
+| --------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Dashboard host  | Vercel       | Server-rendered by the Main Process itself (Jinja2 templates). No separate frontend service.                                              |
+| Data + realtime | Supabase     | OCE's own API (§7) + an SSE stream of `ticket_events` for live updates                                                                    |
+| Login           | Auth0        | Local admin account(s), hashed password in `settings`, session cookie issued by the API. Stretch: self-hosted Authentik/Keycloak for SSO |
+
+**Remote access (opt-in, off for the demo):** the API supports non-local clients, so a hosted UI could talk to the GX10 over a tunnel for remote operators. It is never the system of record — all state stays in the local DB.
+
+#### Frontend stack: HTMX + Jinja2 + Alpine.js
+
+No SPA framework and **no Node toolchain**. The dashboard is HTML rendered by FastAPI.
+
+| Piece                                                     | Role                                                                                                                                                                      |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Jinja2**                                                | Page and fragment templates, rendered by FastAPI. Templates live next to the routes.                                                                                      |
+| **HTMX**                                                  | Partial page updates (`hx-get`/`hx-post` on buttons, tables, forms). The SSE extension subscribes to `/tickets/{id}/stream` and swaps new timeline events in as agents work. |
+| **Alpine.js**                                             | Client-side widgets: dropdowns, modals (confirm approve/deny/restore), tabs, toggles.                                                                                     |
+| **Chart.js**                                              | Error rate and P95 charts, fed from `/api/tools/metrics`. Vendored locally.                                                                                               |
+| **Pico CSS** or **Tailwind (CLI build, vendored output)** | Styling. Pico needs no build at all.                                                                                                                                      |
+
+All JS/CSS is vendored into `oce/static/` so the dashboard works with the Internet disconnected.
+
+Why this fits:
+
+- The pages are mostly tables and detail views (tickets, deployments, logs, health checks) with a few actions. That is what HTMX is built for.
+- Live agent output is the heart of the demo; HTMX SSE gives that in one attribute, no WebSocket client code.
+- The same person owns the API and the UI, so there is no frontend/backend contract to negotiate.
+- One fewer container on the GX10, nothing to build for ARM64.
+
+HTML routes (browser only; JSON lives under `/api`, see §7):
+
+```
+GET  /                      → redirect to /dash (or /login)
+GET  /login, POST /login    → session cookie
+GET  /dash                  → full page
+GET  /tickets               → full page; with HX-Request header returns only the table fragment
+GET  /tickets/{id}          → full page; timeline fragment at /tickets/{id}/timeline
+GET  /tickets/{id}/stream   → text/event-stream of rendered timeline rows
+POST /tickets/{id}/approve  → returns updated gate-status fragment
+POST /tickets/{id}/deny     → same
+GET  /deployments, /logs, /health, /settings → same full-page / fragment pattern
+```
+
 ---
 
 ## 5. Incident lifecycle
@@ -406,28 +432,32 @@ MTTR          1m 22s
 A ticket moves through these states. Each transition appends a `ticket_event`.
 
 ```
- detected ─▶ investigating ─▶ fix_proposed ─▶ sandbox_validated ─▶ reviewed ─▶ approved ─▶ deploying ─▶ resolved
-     │             │                │                 │               │           │            │
-     │             │                │                 │               │           └ DENIED ──▶ awaiting_human
-     │             │                │                 └ not reproduced / fix failed ──▶ back to investigating
-     │             │                └ Engineer                                      (max N attempts)
-     │             └ Investigator (+ Guardian)
+ detected ─▶ investigating ─▶ fix_proposed ─▶ sandbox_validated ─▶ reviewed ─▶ gate ─▶ awaiting_approval ─▶ approved ─▶ deploying ─▶ resolved
+     │             │                │                 │                │          │            │                              │
+     │             │                │                 │                │          │            └ human denies ─▶ denied       └ health worse ─▶ rolled_back
+     │             │                │                 │                │          └ policy fails ─▶ denied (human may override)
+     │             │                │                 │                └ Guardian NEEDS_TESTING ─▶ back to fix_proposed (with notes)
+     │             │                │                 │                └ Guardian REJECT ─▶ back to investigating (max N attempts)
+     │             │                │                 └ not reproduced / fix failed ─▶ back to investigating
+     │             │                └ Engineer
+     │             └ Investigator
      └ health script / Slack / manual
-                                                                                 post-deploy health worse ──▶ rolled_back
 ```
 
-Step by step:
+`awaiting_approval` is skipped when `settings.require_human_approval` is false (decision D3).
 
-| # | State                 | Who                   | What happens                                                                 |
-| - | --------------------- | --------------------- | ---------------------------------------------------------------------------- |
-| 1 | `detected`            | Health script         | Check fails → ticket created with the `CheckResult` and metric deltas.       |
-| 2 | `investigating`       | Investigator + Guardian | Diag investigates with read-only tools; Safety reviews the diagnosis.        |
-| 3 | `fix_proposed`        | Engineer          | Sandbox spun up; incident reproduced; patch generated and applied in sandbox.|
-| 4 | `sandbox_validated`   | Sandbox runner        | Load test + tests after the patch; compared against baseline.                |
-| 5 | `reviewed`            | Guardian            | Risk score + proposed action produced.                                       |
-| 6 | `approved` / `denied` | Command check gate    | Policy checks; backup taken on approval.                                     |
-| 7 | `deploying`           | Run executor          | Staged rollout against production with monitoring.                           |
-| 8 | `resolved`            | Health scripts        | Triggering check passes again; MTTR computed.                                |
+| # | State                 | Who                | What happens                                                                              |
+| - | --------------------- | ------------------ | ----------------------------------------------------------------------------------------- |
+| 1 | `detected`            | Health script      | Check fails → ticket created with the `CheckResult` and metric deltas.                    |
+| 2 | `investigating`       | Investigator       | Investigates with read-only tools; posts findings and a diagnosis to the timeline.        |
+| 3 | `fix_proposed`        | Engineer           | Sandbox spun up; incident reproduced; patch generated and applied in sandbox.             |
+| 4 | `sandbox_validated`   | Sandbox runner     | Load test + tests after the patch; compared against baseline.                             |
+| 5 | `reviewed`            | Guardian           | Risk score + decision (`APPROVE` / `REJECT` / `NEEDS_TESTING`).                            |
+| 6 | `gate`                | Orchestrator → gate | Orchestrator submits `ActionRequest`; gate runs policy checks.                           |
+| 7 | `awaiting_approval`   | Human              | Dashboard shows the evidence; operator clicks Approve or Deny.                            |
+| 8 | `approved`            | Gate               | Backup taken.                                                                             |
+| 9 | `deploying`           | Run executor       | Staged rollout against production with monitoring.                                        |
+| 10| `resolved`            | Health scripts     | Triggering check passes again; MTTR computed.                                             |
 
 A human can intervene at any point from the dashboard (approve a denied action, deny an approved one, or restore a backup).
 
@@ -452,8 +482,8 @@ ticket_events                  -- the timeline; everything the dashboard shows c
   id            INTEGER PK
   ticket_id     TEXT FK
   ts            DATETIME
-  actor         TEXT           -- health_check | investigator | engineer | guardian | gate | executor | human
-  type          TEXT           -- detected | finding | diagnosis | patch | sandbox_result | review | gate_decision | run | resolved
+  actor         TEXT           -- health_check | investigator | engineer | guardian | orchestrator | gate | executor | human
+  type          TEXT           -- detected | finding | diagnosis | patch | sandbox_result | review | action_request | gate_decision | human_decision | run | resolved
   payload       JSON
 
 deployments
@@ -465,7 +495,7 @@ deployments
   status        TEXT           -- running | succeeded | failed | rolled_back
   started_at    DATETIME
   finished_at   DATETIME
-  evidence      JSON           -- sandbox run id, risk score, test results
+  evidence      JSON           -- sandbox run id, risk score, guardian decision, test results
 
 health_checks
   name          TEXT PK
@@ -488,60 +518,57 @@ sandbox_runs
 
 settings
   key           TEXT PK
-  value         JSON           -- thresholds, baselines, allowlist path, slack config
+  value         JSON           -- thresholds, baselines, allowlist path, require_human_approval, slack config, users
 ```
 
 ---
 
 ## 7. API reference
 
-All components (frontend, Slack, health scripts, LLM agents, external tools) use this one API. Proposed v0:
+All JSON endpoints are under `/api`. The browser uses the HTML routes in §4.10 instead; everything else (Slack, health scripts, agents, external clients) uses these.
 
-| Method | Path                             | Used by            | Purpose                                             |
-| ------ | -------------------------------- | ------------------ | --------------------------------------------------- |
-| GET    | `/health`                        | everyone           | OCE's own liveness                                  |
-| GET    | `/tickets`                       | frontend           | List tickets (filter by status)                     |
-| POST   | `/tickets`                       | Slack, manual      | Create a ticket                                     |
-| GET    | `/tickets/{id}`                  | frontend           | Ticket + full event timeline                        |
-| POST   | `/tickets/{id}/events`           | LLM agents         | Append a finding / diagnosis / patch / review       |
-| POST   | `/tickets/{id}/approve`          | human              | Approve a gated action                              |
-| POST   | `/tickets/{id}/deny`             | human              | Deny a gated action                                 |
-| POST   | `/actions`                       | Guardian         | Submit a proposed action → command check gate       |
-| GET    | `/deployments`                   | frontend           | Past deployments with evidence                      |
-| POST   | `/deployments/{id}/restore`      | frontend, executor | Restore from that deployment's backup               |
-| GET    | `/checks`                        | frontend           | Registered health checks and last results           |
-| POST   | `/checks/{name}/run`             | frontend           | Run a check now                                     |
-| PUT    | `/checks/{name}`                 | frontend           | Enable/disable, change interval                     |
-| GET    | `/logs`                          | frontend           | Ticket events + service logs                        |
-| GET    | `/settings` / PUT `/settings`    | frontend           | Thresholds, baselines, Slack, allowlist             |
-| GET    | `/stats/local-ai`                | frontend           | Cloud requests (0), bytes uploaded (0), model, hw   |
+| Method | Path                                 | Used by             | Purpose                                                  |
+| ------ | ------------------------------------ | ------------------- | -------------------------------------------------------- |
+| GET    | `/api/health`                        | everyone            | OCE's own liveness                                       |
+| GET    | `/api/tickets`                       | clients             | List tickets (filter by status)                          |
+| POST   | `/api/tickets`                       | Slack, manual       | Create a ticket                                          |
+| GET    | `/api/tickets/{id}`                  | clients, orchestrator | Ticket + full event timeline                           |
+| POST   | `/api/tickets/{id}/events`           | agents, orchestrator | Append a finding / diagnosis / patch / review           |
+| POST   | `/api/tickets/{id}/approve`          | human (via HTML route) | Approve an action awaiting approval                   |
+| POST   | `/api/tickets/{id}/deny`             | human (via HTML route) | Deny an action                                        |
+| POST   | `/api/actions`                       | orchestrator        | Submit an `ActionRequest` → command check gate           |
+| GET    | `/api/deployments`                   | clients             | Past deployments with evidence                           |
+| POST   | `/api/deployments/{id}/restore`      | human, executor     | Restore from that deployment's backup                    |
+| GET    | `/api/checks`                        | clients             | Registered health checks and last results                |
+| POST   | `/api/checks/{name}/run`             | human               | Run a check now                                          |
+| PUT    | `/api/checks/{name}`                 | human               | Enable/disable, change interval                          |
+| GET    | `/api/logs`                          | clients             | Ticket events + service logs                             |
+| GET/PUT | `/api/settings`                     | human               | Thresholds, baselines, Slack, allowlist, approval mode   |
+| GET    | `/api/stats/local-ai`                | dashboard           | Cloud requests (0), bytes uploaded (0), model, hardware  |
 
-**Agent tool endpoints** (called by the LLM tool layer, scoped per agent):
+**Agent tool endpoints** — each `models/tools/*` function maps to one of these. Access is scoped per agent token.
 
-| Method | Path                      | Available to          |
-| ------ | ------------------------- | --------------------- |
-| GET    | `/tools/logs`             | Diag                  |
-| GET    | `/tools/metrics`          | Diag                  |
-| GET    | `/tools/git`              | Diag, Solution        |
-| GET    | `/tools/code`             | Diag, Solution        |
-| POST   | `/tools/sandbox/patch`    | Solution              |
-| POST   | `/tools/sandbox/test`     | Solution              |
-| GET    | `/tools/diff`             | Safety                |
-| GET    | `/tools/test-results`     | Safety                |
+| Method | Path                            | `models/tools` module | Investigator | Engineer | Guardian |
+| ------ | ------------------------------- | --------------------- | :----------: | :------: | :------: |
+| GET    | `/api/tools/logs`               | `docker_tools`        | ✓            |          |          |
+| GET    | `/api/tools/containers`         | `docker_tools`        | ✓            |          |          |
+| GET    | `/api/tools/metrics`            | `prometheus_tools`    | ✓            |          |          |
+| GET    | `/api/tools/git`                | `git_tools`           | ✓            | ✓        |          |
+| GET    | `/api/tools/code`               | `filesystem_tools`    | ✓            | ✓        |          |
+| POST   | `/api/tools/sandbox/patch`      | `sandbox_tools`       |              | ✓        |          |
+| POST   | `/api/tools/sandbox/test`       | `sandbox_tools`       |              | ✓        |          |
+| POST   | `/api/tools/sandbox/loadtest`   | `sandbox_tools`       |              | ✓        |          |
+| GET    | `/api/tools/diff`               | `review_tools`        |              |          | ✓        |
+| GET    | `/api/tools/test-results`       | `review_tools`        |              |          | ✓        |
+| GET    | `/api/tools/sandbox-results`    | `review_tools`        |              |          | ✓        |
 
-Auth: a simple bearer token per client type for the hackathon (frontend, agent-diag, agent-solution, agent-safety, health). Agent tokens only unlock their own tool endpoints — this is how permissions are enforced regardless of what the model asks for.
+**Auth:** a bearer token per client type for the hackathon — `agent-investigator`, `agent-engineer`, `agent-guardian`, `orchestrator`, `health`, `slack`. Tokens are listed in `models/config.py` (agent side) and `settings` (server side). The dashboard uses a session cookie. Permissions are enforced by the server regardless of what the model asks for.
 
 ---
 
-## 8. LLM scheduling and VRAM
+## 8. LLM serving and scheduling
 
-**Current serving choice:** Ollama at `http://localhost:11434`; the Python client uses `POST /api/chat` with `model: "nemotron3:33b"`. Check the live model with `ollama ps`, and send a short test request before connecting any agents.
-
-All three agent roles **share one loaded model** rather than running three copies. Tool calls and role-specific conversation contexts differentiate the agents. For the initial implementation, process agent requests sequentially; only introduce concurrent inference after measuring memory use, context sizes, response latency and Ollama behavior on the GX10.
-
-The earlier design proposed two simultaneous request slots (Investigator + Guardian, then Engineer + Guardian). This remains an **optimization to benchmark**, not a verified memory constraint or existing scheduler. A bounded semaphore and request queue can be introduced in the orchestrator when justified by measurements.
-
-Helpful verification commands on the GX10:
+**Serving:** Ollama at `http://localhost:11434`; `models/core/llm.py` calls `POST /api/chat` with `model: "nemotron3:33b"`. Verify before wiring agents:
 
 ```bash
 ollama list
@@ -550,7 +577,9 @@ curl http://localhost:11434/api/tags
 ollama run nemotron3:33b "Reply with READY."
 ```
 
-The model name `nemotron3:33b` should not be relabeled "Nemotron 3.5 Lightning" without confirming the actual model identity and event eligibility.
+**Scheduling:** all three agent roles share one loaded model; role-specific prompts, contexts, and tool sets differentiate them. The initial implementation processes agent requests **sequentially** (Investigator → Engineer → Guardian), which is also the natural order of the pipeline.
+
+An earlier design proposed two concurrent request slots (Investigator + Guardian, then Engineer + Guardian). That remains an **optimization to benchmark**, not a known constraint: with one Ollama-served model the limit is concurrent requests and context size, not VRAM for multiple copies. A bounded semaphore and request queue can be added to the orchestrator once memory use, context sizes, and latency on the GX10 have been measured (roadmap A8).
 
 ---
 
@@ -563,14 +592,14 @@ CUSTOMER ─▶ FRONTEND ─▶ ORDERS API ─▶ POSTGRES
                               └─────▶ REDIS
 ```
 
-| Service      | Notes                                                                                   |
-| ------------ | --------------------------------------------------------------------------------------- |
+| Service      | Notes                                                                                                                                                                                                                                |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `orders-api` | FastAPI. Reads `DB_TIMEOUT` from config **committed in git** so the bad deploy is a real commit. Emits structured JSON logs, `/metrics` (prometheus_client), `/health`. Some queries `pg_sleep` ~150 ms so a 100 ms timeout actually fails. |
-| `frontend`   | Optional thin web UI; can be skipped initially.                                         |
-| `postgres`   | Official image (multi-arch).                                                            |
-| `redis`      | Official image (multi-arch).                                                            |
-| `prometheus` | Scrapes `orders-api`.                                                                   |
-| `loadgen`    | Steady synthetic traffic. **Required** — without traffic there is no error rate to watch.|
+| `frontend`   | Optional thin web UI; can be skipped initially.                                                                                                                                                                                      |
+| `postgres`   | Official image (multi-arch).                                                                                                                                                                                                         |
+| `redis`      | Official image (multi-arch).                                                                                                                                                                                                         |
+| `prometheus` | Scrapes `orders-api`.                                                                                                                                                                                                                |
+| `loadgen`    | Steady synthetic traffic. **Required** — without traffic there is no error rate to watch.                                                                                                                                            |
 
 Scripts:
 
@@ -588,117 +617,159 @@ Healthy baseline: error rate 0.2 %, P95 180 ms. Incident: error rate ~38 %, P95 
 3. Health script trips → `INC-0042` appears in Current Tickets within seconds.
 4. Investigator findings stream into the ticket timeline: log investigation, metrics, deployment history → root cause with confidence and evidence.
 5. Sandbox spins up, reproduces the incident (BEFORE metrics), Engineer applies the patch, AFTER metrics match baseline.
-6. Guardian review: risk 8/100, proposed action `deploy_patch`.
-7. Command gate checklist goes green; backup taken; run executor deploys in stages.
-8. Health checks pass → **INCIDENT RESOLVED**, MTTR card.
-9. **Optional closer:** disconnect the GX10 from the Internet mid-demo and re-run. Everything still works.
+6. Guardian review: risk 8/100, decision `APPROVE`.
+7. Command gate checklist goes green → ticket shows **Awaiting approval** with the full evidence. Presenter clicks **Approve** (the one human action in the demo; can be switched off in Settings to show full autonomy).
+8. Backup taken; run executor deploys in stages.
+9. Health checks pass → **INCIDENT RESOLVED**, MTTR card.
+10. **Optional closer:** disconnect the GX10 from the Internet and re-run. Everything still works.
 
 ---
 
 ## 11. Repository layout
 
-The `models/` tree below matches the current VS Code/SSH folder setup. Other directories and contents are shown as **planned** unless already implemented by the respective project owner.
+`models/` matches the current folder setup on the GX10. `oce/` and most of `fakeco/` are planned.
 
 ```text
 oce/
 ├── README.md
-├── fakeco/                       # existing demo-company area; service content evolves
-│   └── ...                       # production Docker stack, load generator, incident scripts
-├── models/                       # current multi-agent Python package
+├── requirements.txt               # single root requirements for models/ + oce/ (merge models/requirements.txt here)
+├── fakeco/                        # demo company
+│   ├── docker-compose.yml
+│   ├── orders-api/
+│   ├── frontend/
+│   ├── loadgen/
+│   ├── prometheus/
+│   ├── inject_incident.sh
+│   └── reset.sh
+├── models/                        # AI subsystem (exists)
 │   ├── __init__.py
-│   ├── config.py                  # model endpoint and runtime configuration
-│   ├── requirements.txt
+│   ├── config.py                  # model, Ollama URL, Main Process URL, agent tokens, timeouts
 │   ├── core/
 │   │   ├── __init__.py
 │   │   ├── llm.py                 # Ollama API client
-│   │   ├── agent.py               # shared agent loop
-│   │   ├── tool_registry.py       # allowed tool schemas and dispatcher
+│   │   ├── agent.py               # shared bounded agent loop
+│   │   ├── tool_registry.py       # tool schemas, validation, per-agent allowlists, dispatch
 │   │   └── state.py               # incident and agent context
 │   ├── agents/
 │   │   ├── __init__.py
-│   │   ├── investigator.py        # evidence-gathering agent
-│   │   ├── engineer.py            # sandbox remediation agent
-│   │   └── guardian.py            # independent safety reviewer
+│   │   ├── investigator.py
+│   │   ├── engineer.py
+│   │   └── guardian.py
 │   ├── prompts/
 │   │   ├── investigator.txt
 │   │   ├── engineer.txt
 │   │   └── guardian.txt
-│   ├── tools/
+│   ├── tools/                     # thin HTTP clients for oce /api/tools/*
 │   │   ├── __init__.py
-│   │   ├── docker_tools.py        # logs and container inspection
-│   │   ├── filesystem_tools.py    # guarded code/config reads
-│   │   ├── prometheus_tools.py    # metrics queries
-│   │   └── sandbox_tools.py       # sandbox patch/test operations
-│   ├── orchestrator.py            # incident handoffs and retries
-│   └── main.py                    # entry point for agents
-├── oce/                           # planned Main Process/API implementation
-│   ├── main.py                    # FastAPI and scheduling
-│   ├── models.py                  # API/data contracts (distinct from top-level models/)
-│   ├── db.py
-│   ├── api/
-│   ├── web/
-│   ├── templates/
-│   ├── static/
-│   ├── checks/
-│   ├── sandbox.py
-│   ├── gate.py
+│   │   ├── docker_tools.py
+│   │   ├── prometheus_tools.py
+│   │   ├── filesystem_tools.py
+│   │   ├── git_tools.py
+│   │   ├── sandbox_tools.py
+│   │   └── review_tools.py
+│   ├── orchestrator.py            # handoffs, retries, ActionRequest submission
+│   └── main.py                    # standalone dev entry point: python3 -m models.main --ticket INC-0042
+├── oce/                           # platform (planned)
+│   ├── main.py                    # FastAPI app, scheduler, launches orchestrator per ticket
+│   ├── schemas.py                 # Pydantic contracts: Ticket, TicketEvent, ActionRequest, CheckResult …
+│   ├── db.py                      # SQLite access layer
+│   ├── api/                       # JSON routes under /api (tickets, deployments, checks, actions, tools, settings)
+│   ├── web/                       # HTML routes for the dashboard (HTMX fragments + full pages)
+│   ├── templates/                 # Jinja2: base.html, pages/, fragments/
+│   ├── static/                    # vendored htmx.js, alpine.js, chart.js, css
+│   ├── checks/                    # health check plug-ins
+│   ├── sandbox.py                 # worktree + compose -p sandbox + load test
+│   ├── gate.py                    # command check gate (policy engine)
 │   ├── allowlist.yaml
 │   ├── backup.py
-│   ├── executor.py
+│   ├── executor.py                # staged rollout + auto-restore
 │   └── slack.py
-└── docs/                         # planned supporting documentation
+└── docs/
 ```
 
-**Running the Python package (once implemented):** from the repository root, use `python3 -m models.main` so `models.core` and `models.agents` imports resolve consistently. A successful Ollama API check does not, by itself, establish that these Python modules are implemented.
+Run the agents standalone from the repo root with `python3 -m models.main` so `models.core` and `models.agents` imports resolve.
 
 ---
 
 ## 12. Tech stack
 
-| Layer          | Choice                                   | Why                                                   |
-| -------------- | ---------------------------------------- | ----------------------------------------------------- |
-| Hardware       | ASUS Ascent GX10 (GB10, ARM64, 128 GB)   | Competition platform; everything must be ARM-compatible|
-| Model          | `nemotron3:33b` (initial, local)         | One shared model across three agent roles              |
-| Model serving  | Ollama, local `/api/chat` endpoint       | Confirmed installed; inference still needs validation |
-| Backend        | Python 3.12, FastAPI, SQLite             | Fast to build, async, ARM-friendly                     |
-| Infra target   | Docker Compose (multi-arch images)       | fakeco + sandbox                                       |
-| Metrics        | Prometheus + prometheus_client           | Standard, lightweight                                  |
-| Logs           | Structured JSON to stdout / `docker logs`| Skip Loki unless time allows                           |
+| Layer          | Choice                                   | Why                                                                          |
+| -------------- | ---------------------------------------- | ---------------------------------------------------------------------------- |
+| Hardware       | ASUS Ascent GX10 (GB10, ARM64, 128 GB)   | Competition platform; everything must be ARM-compatible                      |
+| Model          | `nemotron3:33b` (initial, local)         | One shared model across three agent roles                                    |
+| Model serving  | Ollama, local `/api/chat`                | Already installed on the box                                                 |
+| Backend        | Python 3.12, FastAPI, SQLite             | Fast to build, async, ARM-friendly                                           |
+| Infra target   | Docker Compose (multi-arch images)       | fakeco + sandbox                                                             |
+| Metrics        | Prometheus + prometheus_client           | Standard, lightweight                                                        |
+| Logs           | Structured JSON to stdout / `docker logs`| Skip Loki unless time allows                                                 |
 | Dashboard      | HTMX + Jinja2 + Alpine.js, Chart.js      | Server-rendered by FastAPI; no Node, no build step, works offline (see §4.10) |
-| Auth           | Local accounts, session cookie           | Must work offline; no external IdP                     |
-| Load gen       | Small Python script or Locust            |                                                        |
+| Auth           | Local accounts, session cookie           | Must work offline; no external IdP                                           |
+| Load gen       | Small Python script or Locust            |                                                                              |
 
 ---
 
 ## 13. Work split and roadmap
 
-**AI subsystem (`models/`):** Own the shared Ollama client, bounded agent loop, role prompts, guarded tool integrations, agent state, three agents, and orchestration.
+**AI subsystem (`models/`):** Ollama client, bounded agent loop, role prompts, tool clients, agent state, the three agents, orchestration.
 
-**Platform (`oce/`, `fakeco/`):** Own the API, database, health checks, policy gate, backups, executor, isolated sandbox, dashboard and optional Slack integration. Agree on common event, evidence and tool contracts early.
+**Platform (`oce/`, `fakeco/`):** API, database, dashboard, health checks, gate, backup, executor, sandbox, fakeco, optional Slack.
 
-| Stage | Deliverable | Status |
-| --- | --- | --- |
-| **A0** | Create `models/` structure and discover installed Ollama models | Folder setup created; model tags confirmed |
-| **A1** | Test `nemotron3:33b` inference, implement `config.py` and `core/llm.py` | Next |
-| **A2** | Implement tool registry and bounded tool-calling agent loop | Planned |
-| **A3** | Investigator: Docker logs, container state, metrics and read-only diagnosis | Planned |
-| **A4** | Engineer: sandbox-scoped patching, reproduction and test iteration | Planned |
-| **A5** | Guardian: evidence review, risk evaluation and advisory decision | Planned |
-| **A6** | Orchestrator: structured handoffs, incident state and audit trail | Planned |
-| **A7** | Integrate with fakeco, API, gate, backup, executor and dashboard | Planned |
-| **A8** | End-to-end incident demo, latency profiling, offline and safety testing | Planned |
+Both tracks depend on the shared contracts in `oce/schemas.py` (`Ticket`, `TicketEvent`, `ActionRequest`, `CheckResult`, agent output shapes) — agree on those first.
 
-**Early integration contracts:** Agree on structured Investigator diagnosis, Engineer patch/test evidence, Guardian review, and command gate action request formats. Do not allow arbitrary shell commands or production filesystem writes through agent tools.
+### Platform milestones
+
+| Stage  | Deliverable                                                                                          | Unblocks           | Status  |
+| ------ | ---------------------------------------------------------------------------------------------------- | ------------------ | ------- |
+| **M0** | `oce/schemas.py` contracts + stub `/api` returning canned data + `/api/tools/*` stubs                 | AI team, dashboard | Next    |
+| **M1** | `fakeco/` up with loadgen; `inject_incident.sh` visibly raises error rate in Prometheus              | everything         | Planned |
+| **M2** | Health checks + ticket creation + SSE timeline. Inject → ticket appears live on the dashboard.        | A3                 | Planned |
+| **M3** | Gate + allowlist + backup + executor + approve/deny. Manual `POST /api/actions` restores the timeout. | A5, A6             | Planned |
+| **M4** | Sandbox runner with before/after metrics behind `/api/tools/sandbox/*`.                              | A4                 | Planned |
+| **M5** | Remaining dashboard pages; Slack (stretch).                                                          | demo               | Planned |
+| **M6** | End-to-end with all three agents; MTTR card; offline demo.                                           | judging            | Planned |
+
+### AI milestones
+
+| Stage  | Deliverable                                                                       | Status                                      |
+| ------ | --------------------------------------------------------------------------------- | ------------------------------------------- |
+| **A0** | Create `models/` structure and discover installed Ollama models                    | Done — folder created, model tags confirmed |
+| **A1** | Test `nemotron3:33b` inference; implement `config.py` and `core/llm.py`           | Next                                        |
+| **A2** | Tool registry and bounded tool-calling agent loop                                  | Planned                                     |
+| **A3** | Investigator: logs, container state, metrics, git, read-only diagnosis            | Planned (needs M0 stubs)                    |
+| **A4** | Engineer: sandbox-scoped patching, reproduction, test iteration                    | Planned (needs M4)                          |
+| **A5** | Guardian: evidence review, risk evaluation, advisory decision                      | Planned                                     |
+| **A6** | Orchestrator: handoffs, retries, `ActionRequest` submission, audit trail           | Planned (needs M3)                          |
+| **A7** | Integrate with fakeco, API, gate, backup, executor, dashboard                      | Planned                                     |
+| **A8** | End-to-end demo, latency profiling, concurrency benchmark, offline and safety tests | Planned                                     |
+
+Early checks:
+
+- Test on the GX10 early — all images must be ARM64.
+- Never allow arbitrary shell commands or production filesystem writes through agent tools.
 
 ---
 
-## 14. Open questions
+## 14. Decisions
 
-- Does the competition specifically require Nemotron 3.5 Lightning, and does any installed Ollama tag satisfy that requirement?
-- How many concurrent model requests can Ollama serve reliably on this GX10 at the desired context length?
-- What concrete API/data schemas will connect the `models/` orchestrator to the Main Process and incident database?
-- How will sandbox isolation be enforced at the container, network, mount and credential levels?
-- How will Guardian's advisory recommendation translate to a deterministic gate decision and human approval?
-- Real traffic-split canary or demo-only visual stages?
-- Slack integration in the initial demo or as a stretch goal?
+Recorded so nobody re-litigates them by accident. Any can be overturned by the team — update this section if so.
+
+| ID     | Decision                                                                                                                                                                                                           |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **D1** | **Agent tools are HTTP clients.** `models/tools/*` call `oce` `/api/tools/*`. The registry controls which tools an agent is offered; per-agent API tokens control what the server will actually serve.          |
+| **D2** | **Guardian is advisory.** Its `APPROVE` never reaches the gate directly. `models/orchestrator.py` builds the `ActionRequest` and posts it to `/api/actions`.                                                       |
+| **D3** | **Human approval on by default.** `settings.require_human_approval = true`. After the gate's policy checks pass, the ticket waits for an Approve click. Can be switched off in Settings for a fully autonomous run. |
+| **D4** | **Single process.** `oce/main.py` runs the orchestrator as an in-process background task. `models/main.py` is a standalone dev entry point only.                                                                  |
+| **D5** | **Fully local frontend.** HTMX + Jinja2 + Alpine served by FastAPI; local auth. No Vercel / Supabase / Auth0 (§4.10).                                                                                             |
+| **D6** | **Sequential agent execution first.** Concurrency is an A8 benchmark, not a day-one feature (§8).                                                                                                                 |
+| **D7** | **Naming.** Top-level `models/` is the agent package; platform data contracts live in `oce/schemas.py` to avoid the clash. One root `requirements.txt`.                                                            |
+
+---
+
+## 15. Open questions
+
+- Does the competition specifically require Nemotron 3.5 Lightning, and does any installed Ollama tag satisfy it? Don't relabel `nemotron3:33b` until confirmed with organizers.
+- How many concurrent model requests can Ollama serve reliably on this GX10 at the needed context length? (A8)
+- Sandbox isolation details: network, mounts, credentials — what exactly stops a sandbox container reaching production?
+- Real traffic-split canary (nginx weights) or demo-only visual stages?
 - Log source: `docker logs`, shared log file, or a dedicated log system?
+- Slack: in the demo or stretch only?
