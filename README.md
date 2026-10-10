@@ -352,15 +352,51 @@ Supabase + Vercel + Auth0 were considered for the dashboard and rejected. All th
 - **Vercel** would host the UI off-box, so the Internet-outage demo would take down OCE's own console.
 - **Auth0** would make login depend on an external service during an outage.
 
-What we use instead, keeping the same developer experience:
+What we use instead:
 
 | Need            | Cloud option  | Local choice                                                                                         |
 | --------------- | ------------- | ---------------------------------------------------------------------------------------------------- |
-| Dashboard host  | Vercel        | Next.js (or Vite) built and served from the GX10 in a container; static files behind FastAPI/nginx   |
-| Data + realtime | Supabase      | OCE's own REST API (§7) + a WebSocket/SSE stream of `ticket_events` for live updates                 |
+| Dashboard host  | Vercel        | Server-rendered by the Main Process itself (Jinja2 templates). No separate frontend service.         |
+| Data + realtime | Supabase      | OCE's own REST API (§7) + an SSE stream of `ticket_events` for live updates                          |
 | Login           | Auth0         | Local admin account(s), hashed password in `settings`, session cookie issued by the API. Stretch: self-hosted Authentik/Keycloak for SSO |
 
 **Remote access (opt-in, off for the demo):** the API supports non-local clients, so a hosted UI could talk to the GX10 over a tunnel for remote operators. It is never the system of record — all state stays in the local DB.
+
+#### Frontend stack: HTMX + Jinja2 + Alpine.js
+
+No SPA framework and **no Node toolchain**. The dashboard is HTML rendered by FastAPI.
+
+| Piece          | Role                                                                                              |
+| -------------- | ------------------------------------------------------------------------------------------------- |
+| **Jinja2**     | Page and fragment templates, rendered by FastAPI. Templates live next to the routes.              |
+| **HTMX**       | Partial page updates (`hx-get`/`hx-post` on buttons, tables, and forms). The SSE extension subscribes to `/tickets/{id}/stream` and swaps new timeline events into the page as agents work. |
+| **Alpine.js**  | Client-side widgets: dropdowns, modals (confirm approve/deny/restore), tabs, toggles.             |
+| **Chart.js**   | Error rate and P95 charts, fed from `/tools/metrics`. Vendored locally.                           |
+| **Pico CSS** or **Tailwind (CLI build, vendored output)** | Styling. Pico needs no build at all.                               |
+
+All JS/CSS is vendored into `oce/static/` so the dashboard works with the Internet disconnected.
+
+Why this fits:
+
+- The pages are mostly tables and detail views (tickets, deployments, logs, health checks) with a few actions. That is what HTMX is built for.
+- Live agent output is the heart of the demo; HTMX SSE gives that in one attribute, no WebSocket client code.
+- The same person owns the API and the UI, so there is no frontend/backend contract to negotiate.
+- One fewer container on the GX10, nothing to build for ARM64.
+
+Route conventions:
+
+```
+GET /                      → redirect to /dash (or /login)
+GET /login, POST /login    → session cookie
+GET /dash                  → full page
+GET /tickets               → full page; with HX-Request header returns only the table fragment
+GET /tickets/{id}          → full page; timeline fragment at /tickets/{id}/timeline
+GET /tickets/{id}/stream   → text/event-stream of rendered timeline rows
+POST /tickets/{id}/approve → returns updated gate-status fragment
+GET /deployments, /logs, /health, /settings → same full-page / fragment pattern
+```
+
+JSON endpoints (§7) stay under `/api/...` for Slack, health scripts, agents, and external clients; the HTML routes above are for the browser.
 
 The MTTR card shown on a resolved ticket:
 
@@ -581,7 +617,10 @@ oce/
 │   ├── main.py             # FastAPI app, scheduler, orchestrator
 │   ├── models.py           # Ticket, TicketEvent, Deployment, ActionRequest, CheckResult …
 │   ├── db.py               # SQLite access layer
-│   ├── api/                # route modules (tickets, deployments, checks, actions, tools, settings)
+│   ├── api/                # JSON routes under /api (tickets, deployments, checks, actions, tools, settings)
+│   ├── web/                # HTML routes for the dashboard (HTMX fragments + full pages)
+│   ├── templates/          # Jinja2: base.html, pages/, fragments/
+│   ├── static/             # vendored htmx.js, alpine.js, chart.js, css
 │   ├── checks/             # health check plug-ins
 │   ├── agents/             # Diag / Solution / Safety prompts + tool bindings (AI team)
 │   ├── llm.py              # Nemotron client + 2-slot scheduler
@@ -591,7 +630,6 @@ oce/
 │   ├── backup.py
 │   ├── executor.py         # run executor + staged rollout + auto-restore
 │   └── slack.py
-├── dashboard/              # frontend portal
 └── docs/
 ```
 
@@ -608,7 +646,7 @@ oce/
 | Infra target   | Docker Compose (multi-arch images)       | fakeco + sandbox                                       |
 | Metrics        | Prometheus + prometheus_client           | Standard, lightweight                                  |
 | Logs           | Structured JSON to stdout / `docker logs`| Skip Loki unless time allows                           |
-| Dashboard      | Next.js or Vite, served from the GX10    | Consumes the REST API only; no cloud hosting (see §4.10)|
+| Dashboard      | HTMX + Jinja2 + Alpine.js, Chart.js      | Server-rendered by FastAPI; no Node, no build step, works offline (see §4.10) |
 | Auth           | Local accounts, session cookie           | Must work offline; no external IdP                     |
 | Load gen       | Small Python script or Locust            |                                                        |
 
