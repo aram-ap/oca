@@ -1,0 +1,114 @@
+# Driftwood Coffee Co. — the fake company the SRE agents look after.
+#
+# Production:  docker compose up -d --build              (ports from .env)
+# Sandbox:     docker compose -p driftwood-sandbox --env-file sandbox.env up -d --build
+#
+# Both stacks run side by side with separate containers, networks, volumes and log dirs.
+
+name: driftwood
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    command: >
+      postgres
+        -c shared_preload_libraries=pg_stat_statements
+        -c pg_stat_statements.track=all
+        -c log_min_duration_statement=250
+        -c max_connections=100
+    environment:
+      POSTGRES_USER: driftwood
+      POSTGRES_PASSWORD: driftwood
+      POSTGRES_DB: driftwood
+      SEED_ORDERS: ${SEED_ORDERS:-2000000}
+      SEED_CUSTOMERS: ${SEED_CUSTOMERS:-250000}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${PG_PORT:-5432}:5432"
+    healthcheck:
+      # TCP check: the temporary server used while seeding only listens on a socket,
+      # so this stays unhealthy until seeding finishes.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U driftwood -d driftwood"]
+      interval: 3s
+      timeout: 3s
+      retries: 100
+      start_period: 300s   # first boot seeds millions of rows
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      retries: 20
+
+  orders-api:
+    build:
+      context: ./services/orders-api
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+        GIT_SHA: ${GIT_SHA:-unknown}
+    env_file: ./services/orders-api/config/app.env
+    environment:
+      DATABASE_URL: postgresql://driftwood:driftwood@postgres:5432/driftwood
+      REDIS_URL: redis://redis:6379/0
+      LOG_FILE: /var/log/driftwood/orders-api.log
+    volumes:
+      - ${LOG_DIR:-./logs}:/var/log/driftwood
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+
+  frontend:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./services/frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./services/frontend/html:/usr/share/nginx/html:ro
+      - ${LOG_DIR:-./logs}:/var/log/driftwood
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      orders-api: {condition: service_healthy}
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2d
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+    ports:
+      - "${PROM_PORT:-9090}:9090"
+
+  # Steady customer traffic. The sandbox disables it (LOADGEN_REPLICAS=0) and uses
+  # fixed-size load tests instead, so before/after numbers are comparable.
+  loadgen:
+    build: ./services/loadgen
+    command:
+      - --base-url=http://frontend/api
+      - --rate=${LOADGEN_RATE:-30}
+    volumes:
+      - ${LOG_DIR:-./logs}:/var/log/driftwood
+    depends_on:
+      frontend: {condition: service_started}
+    deploy:
+      replicas: ${LOADGEN_REPLICAS:-1}
+    restart: unless-stopped
+
+volumes:
+  pgdata:

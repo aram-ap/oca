@@ -1,0 +1,37 @@
+# Pre-computed series the detector and the agents can query directly.
+groups:
+  - name: orders-api-slo
+    rules:
+      - record: orders_api:error_rate:1m
+        expr: |
+          (sum(rate(http_requests_total{status=~"5.."}[1m])) or vector(0))
+          / clamp_min(sum(rate(http_requests_total[1m])), 1e-9)
+
+      - record: orders_api:p95_latency_seconds:1m
+        expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[1m])))
+
+      - record: orders_api:rps:1m
+        expr: sum(rate(http_requests_total[1m]))
+
+      - record: orders_api:db_pool_utilization
+        expr: max(max_over_time(db_pool_in_use[1m])) / max(db_pool_size)
+
+      - record: orders_api:db_errors:rate1m
+        expr: sum by (kind, query) (rate(db_errors_total[1m]))
+
+      - record: orders_api:db_query_p95_seconds:1m
+        expr: histogram_quantile(0.95, sum by (le, query) (rate(db_query_duration_seconds_bucket[1m])))
+
+      - alert: OrdersApiHighErrorRate
+        expr: orders_api:error_rate:1m > 0.05
+        for: 30s
+        labels: {severity: page}
+        annotations:
+          summary: "orders-api 5xx rate above 5%"
+
+      - alert: OrdersApiHighLatency
+        expr: orders_api:p95_latency_seconds:1m > 1
+        for: 30s
+        labels: {severity: page}
+        annotations:
+          summary: "orders-api p95 latency above 1s"

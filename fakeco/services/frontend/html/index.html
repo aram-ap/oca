@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Driftwood Coffee Co.</title>
+<style>
+  :root { --bg:#f6f1ea; --ink:#2b2118; --muted:#7a6a5c; --card:#fffdf9; --accent:#a4572a; --line:#e4d9cc; }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; background:var(--bg); color:var(--ink); }
+  header { display:flex; align-items:center; justify-content:space-between; padding:18px 32px; border-bottom:1px solid var(--line); background:var(--card); }
+  .brand { font: 600 22px Georgia, serif; letter-spacing:.3px; }
+  .brand span { color:var(--accent); }
+  .who { color:var(--muted); font-size:14px; }
+  .badge { background:var(--accent); color:#fff; border-radius:999px; padding:2px 10px; margin-left:8px; font-size:13px; }
+  main { max-width:1100px; margin:0 auto; padding:28px 32px 60px; }
+  h2 { font: 600 18px Georgia, serif; margin:28px 0 12px; }
+  .best { display:flex; gap:10px; flex-wrap:wrap; }
+  .best div { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 14px; font-size:14px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); gap:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; display:flex; flex-direction:column; gap:6px; }
+  .card .origin { color:var(--muted); font-size:13px; text-transform:uppercase; letter-spacing:.6px; }
+  .card .name { font-weight:600; }
+  .card .row { display:flex; justify-content:space-between; align-items:center; margin-top:auto; padding-top:8px; }
+  button { background:var(--ink); color:#fff; border:0; border-radius:6px; padding:7px 12px; cursor:pointer; font-size:13px; }
+  button.primary { background:var(--accent); }
+  .error { color:#b3261e; font-size:14px; }
+  .toast { position:fixed; bottom:20px; right:20px; background:var(--ink); color:#fff; padding:10px 16px; border-radius:8px; display:none; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">Driftwood <span>Coffee Co.</span></div>
+  <div class="who"><span id="who"></span><span class="badge" id="cart">0</span>
+    <button class="primary" id="checkout" style="margin-left:12px">Checkout</button></div>
+</header>
+<main>
+  <h2>Bestsellers this month</h2>
+  <div class="best" id="best"></div>
+  <h2>All coffees</h2>
+  <div class="grid" id="products"></div>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+const email = localStorage.getItem("dw_email") ||
+  (() => { const e = `customer${1 + Math.floor(Math.random() * 250000)}@example.com`;
+           localStorage.setItem("dw_email", e); return e; })();
+const cart = {};
+const $ = id => document.getElementById(id);
+const money = c => "$" + (c / 100).toFixed(2);
+const toast = msg => { const t = $("toast"); t.textContent = msg; t.style.display = "block";
+                       setTimeout(() => t.style.display = "none", 2500); };
+
+async function api(path, opts) {
+  const r = await fetch("/api" + path, opts);
+  if (!r.ok) throw new Error(`${r.status} on ${path}`);
+  return r.json();
+}
+
+async function loadSession() {
+  try {
+    const s = await api(`/session?email=${encodeURIComponent(email)}`);
+    $("who").textContent = s.email + (s.tier ? ` · ${s.tier}` : "");
+    $("cart").textContent = s.cart_items;
+  } catch (e) { $("who").textContent = email; }
+}
+
+async function loadBestsellers() {
+  try {
+    const best = await api("/bestsellers");
+    $("best").innerHTML = best.map((b, i) => `<div>#${i + 1} ${b.name} · ${b.origin}</div>`).join("");
+  } catch (e) { $("best").innerHTML = `<span class="error">Bestsellers unavailable (${e.message})</span>`; }
+}
+
+async function loadProducts() {
+  try {
+    const products = await api("/products");
+    $("products").innerHTML = products.map(p => `
+      <div class="card">
+        <div class="origin">${p.origin} · ${p.roast}</div>
+        <div class="name">${p.name}</div>
+        <div class="row"><span>${money(p.price_cents)}</span>
+          <button onclick="addToCart(${p.id})">Add to cart</button></div>
+      </div>`).join("");
+  } catch (e) { $("products").innerHTML = `<span class="error">Catalogue unavailable (${e.message})</span>`; }
+}
+
+async function addToCart(id) {
+  cart[id] = (cart[id] || 0) + 1;
+  try {
+    await api("/cart", { method: "POST", headers: { "content-type": "application/json" },
+                         body: JSON.stringify({ email, product_id: id, qty: 1 }) });
+    loadSession();
+  } catch (e) { toast("Could not add to cart: " + e.message); }
+}
+
+$("checkout").onclick = async () => {
+  const items = Object.entries(cart).map(([product_id, qty]) => ({ product_id: +product_id, qty }));
+  if (!items.length) return toast("Your cart is empty");
+  try {
+    const o = await api("/orders", { method: "POST", headers: { "content-type": "application/json" },
+                                     body: JSON.stringify({ email, items }) });
+    Object.keys(cart).forEach(k => delete cart[k]);
+    toast(`Order #${o.order_id} placed · ${money(o.total_cents)}`);
+    loadSession();
+  } catch (e) { toast("Checkout failed: " + e.message); }
+};
+
+loadSession(); loadBestsellers(); loadProducts();
+</script>
+</body>
+</html>
