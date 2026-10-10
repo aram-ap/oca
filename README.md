@@ -870,3 +870,20 @@ Recorded so nobody re-litigates them by accident. Any can be overturned by the t
 - Jira for the demo: a free Jira Cloud site (easy, but external → `minimal` policy and the panel shows bytes sent) or a self-hosted Jira Data Center trial in Docker on the GX10 (fully local, heavier to set up, ARM64 support to verify)?
 - Which Jira field carries `service`? Component vs. a custom field vs. parsed from the summary.
 - Slack: in the demo or stretch only?
+
+## Implementation notes — agent checkpoint
+
+- Implemented environment-backed model configuration, the async Ollama client,
+  and inference/synthetic tool-call smoke checks; real GX10 validation is pending.
+- Implemented the three role classes in `models/agents/` with separate prompts,
+  role-scoped tool catalogs, and fresh per-run histories.
+- Added the shared bounded tool-using loop, JSON argument/output validation, and
+  structured observations/results in `models/core/`.
+- Added local HTTP clients for the documented `/api/tools/*` endpoints. Investigator
+  is read-only, Engineer has sandbox tools, and Guardian has read-only review tools.
+  No agent submits production actions; Guardian approval remains advisory.
+- Added tests for role boundaries, invalid arguments, incident scoping, tool-result
+  feedback, output correction, run limits, and isolated histories.
+- Main Process endpoints, server-side role permissions/sandbox isolation, shared
+  platform schemas, orchestration, event persistence, and live GX10 validation
+  remain pending. See `models/README.md` for setup and provisional tool contracts.
