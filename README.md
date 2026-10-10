@@ -1,6 +1,6 @@
-# OCE — On-Call Engineer
+# OCA — On-Call Agent
 
-**A fully local autonomous SRE team (in development).** OCE monitors a company's private infrastructure, detects incidents, diagnoses the root cause, develops a fix, proves it in an isolated sandbox, and deploys it under deterministic policy control — without source code, logs, credentials, or infrastructure data ever leaving the machine.
+**A fully local autonomous SRE team (in development).** OCA monitors a company's private infrastructure, detects incidents, diagnoses the root cause, develops a fix, proves it in an isolated sandbox, and deploys it under deterministic policy control — without source code, logs, credentials, or infrastructure data ever leaving the machine.
 
 Everything runs on a single ASUS Ascent GX10 (NVIDIA GB10, 128 GB unified memory) using Ollama to serve one shared local Nemotron model to three specialized agents.
 
