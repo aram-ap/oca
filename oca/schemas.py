@@ -307,7 +307,7 @@ class Deployment(BaseModel):
 
 
 class SandboxMetrics(BaseModel):
-    """Shape of driftwood's ``ops/sandbox.sh loadtest`` JSON summary."""
+    """Shape of the company load generator's JSON summary, measured by OCA."""
 
     requests: int
     failures: int

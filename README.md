@@ -247,13 +247,13 @@ Decision: APPROVE
 
 ### 4.5 Sandbox
 
-An isolated copy of production where the Engineer works and where fixes are proven. Managed by `oca/sandbox.py` on top of driftwood's `ops/sandbox.sh`; the Engineer reaches it only through `sandbox_tools` → `/api/tools/sandbox/*`. **All measurements are taken by the server**; the gate and Guardian trust `sandbox_runs`, never the Engineer's own claims.
+An isolated copy of the relevant application services where the Engineer works and fixes are proven. **OCA owns the full sandbox lifecycle** through `oca/sandbox.py` and `oca/environments/compose.py`; it no longer calls Driftwood's `ops/sandbox.sh` or `ops/reset_db.sh`. The Engineer reaches it only through `sandbox_tools` → `/api/tools/sandbox/*`. **All measurements are taken by the server**; the gate and Guardian trust `sandbox_runs`, never the Engineer's own claims.
 
 Mechanism:
 
-1. `prepare` (orchestrator): `ops/sandbox.sh up` starts a second Docker Compose project (`driftwood-sandbox`, ports +10000, own database and logs) from a git worktree `.sandbox/` at the sha production runs — which already contains the bad change, so nothing has to be injected. `ops/sandbox.sh loadtest N` records **BEFORE**. The incident must reproduce (SLO breach), or the ticket goes back to the Investigator.
-2. Engineer `apply_patch(ticket_id, diff)`: the server validates the unified diff (only `services/orders-api/**`, never `Dockerfile`/`requirements.txt`, ≤ 20 files, ≤ 2000 lines), creates or reuses branch `fix/<ticket>` in the worktree, runs `git apply --check`, applies, commits as "OCA Engineer", and rebuilds the sandbox from the branch. Patches are cumulative.
-3. Engineer `run_loadtest` / `run_tests` iterate; `validate` (orchestrator) is authoritative: rebuild on `fix/<ticket>`, record **AFTER**, run `pytest services/orders-api/tests` against `:18000`, compare with the baseline and the SLO. Everything is attached to the ticket as `sandbox_result` events and a `sandbox_runs` row.
+1. `prepare` (orchestrator): OCA tears down any previous sandbox (including its volumes), then creates a detached git worktree at the running production SHA under `OCA_DATA_DIR/sandboxes/<identity>/checkout`. It resolves the company's Compose file with an explicit OCA environment, validates it, and writes a standalone sandbox configuration. OCA starts a project named `oca-sandbox-driftwood-<identity>` with fresh synthetic seed data and runs the company's load generator to record **BEFORE**. The incident must reproduce (SLO breach), or the ticket goes back to the Investigator.
+2. Engineer `apply_patch(ticket_id, diff)`: the server validates the unified diff (`services/orders-api/**` or `services/frontend/**`, never `Dockerfile`/`requirements.txt`, ≤ 20 files, ≤ 2000 lines), creates or reuses branch `fix/<ticket>` in the worktree, checks, applies and commits the patch, and rebuilds the sandbox. Patches are cumulative. The production checkout is not edited by sandbox operations.
+3. Engineer `run_loadtest` / `run_tests` iterate; `validate` (orchestrator) is authoritative: rebuild on `fix/<ticket>`, record **AFTER**, and run the **patched checkout's** tests in an OCA test container against the sandbox API. Compare with the baseline and SLO. Measurements and test output are attached as `sandbox_result` events and a `sandbox_runs` row.
 
 ```
                 BASELINE      BEFORE FIX     AFTER FIX
@@ -262,7 +262,32 @@ P95              12 ms         10012 ms       16 ms  ✓
 Tests            PASS          FAIL (1)       PASS   ✓
 ```
 
-The sandbox is torn down after the ticket resolves (or when the pipeline gives up). One sandbox runs at a time. The sandbox project has its own network and volumes; it shares the host, so the isolation is "separate compose project", not a network boundary. In dry mode `FakeRunner` models all of this deterministically for both incidents.
+The sandbox is torn down after the ticket resolves (or when the pipeline gives up). Failed startup or initial measurement triggers cleanup. Cleanup failures retain ownership records for a retry and are reported instead of returning a false success. One sandbox runs at a time. OCA uses separate named volumes, an internal bridge network, loopback-only published API/frontend/Prometheus ports, and a generated database password; it never copies the company's `.env`. Non-log bind mounts must resolve inside the sandbox checkout and are made read-only; log mounts are redirected to OCA's runtime directory. External resources, host networking, privileged services, external logging drivers, secrets/configs, and builds outside the checkout are rejected. Containers still share the host kernel: this is not a VM boundary. The operator must review the company's Dockerfiles, seed scripts, and profile. In dry mode `FakeRunner` models both incidents without Docker.
+
+#### Company profile and local setup
+
+The initial supported environment is **Driftwood on Docker Compose**, not arbitrary company infrastructure. `oca/environments/profiles/driftwood.json` supplies the Compose path, test path, services, load-test URL, sandbox ports, environment allowlists/overrides, and log targets. A custom operator-owned JSON profile can be selected with `OCA_SANDBOX_PROFILE`; agents cannot edit it. The platform's production checks, patch policy and deploy adapter are still Driftwood-specific, so a profile alone does not make the entire platform company-independent.
+
+```bash
+# Run from the OCA repository. The company clone keeps its ordinary deployment files.
+export OCA_RUNNER=real
+export OCA_FAKECO_ROOT=/path/to/FakeCo_Driftwood
+export OCA_DATA_DIR=/path/to/oca/data    # must be outside the company checkout
+# Optional: export OCA_SANDBOX_PROFILE=/path/to/operator-profile.json
+python3 -m oca.main
+```
+
+Requirements: Git, Docker Engine and Docker Compose v2 supporting `config --format json` and `up --wait`, plus a committed company checkout with build files, tests and synthetic seed data. OCA retains its existing `ops/status.py` and `ops/deploy.sh` production integrations; no company sandbox scripts or `sandbox.env` are needed. Database reset recreates **all sandbox volumes** from synthetic seeds, so it is slower than the former index-only reset. Production volumes are never reset.
+
+The test container uses OCA's `oca/environments/test_runner/Dockerfile` (Python 3.12, pytest and httpx). Build it while online, along with the company's app/loadgen images and pull the base images, before an offline demo:
+
+```bash
+docker build -t oca-sandbox-tests:1 oca/environments/test_runner
+```
+
+Then rehearse a complete OCA sandbox prepare/patch/validate/teardown while online to warm application build caches, and repeat offline. The OCA runtime stores generated credentials locally under the host account's filesystem permissions. Teardown removes runtime files and containers/volumes; patch branches and cached images remain available for deployment and subsequent runs. Existing company-created `driftwood-sandbox` resources are not adopted or removed by OCA; tear down that old sandbox with the old script before switching if its ports are occupied.
+
+Local verification covers real git worktrees, mocked Docker command execution, isolation rejection, failure cleanup and the dry incident pipeline. **Real Docker execution and both incident scenarios on the GX10 remain to be verified.**
 
 ### 4.6 Command check gate
 
@@ -724,8 +749,8 @@ git history + state/deployments.jsonl = what changed and when
 | Prometheus recorded series `orders_api:*` | `metrics_check`, `/api/tools/metrics`                                         |
 | `logs/orders-api.log`, `logs/frontend.log` | `/api/tools/logs`, `log_error_parse`                                        |
 | `state/deployments.jsonl` + `git diff prev..sha` | `/api/tools/git` (history and the diff of any deployment)              |
-| `ops/sandbox.sh up [ref] / loadtest N / reset-db / down` | the sandbox (`.sandbox/` worktree, project `driftwood-sandbox`, ports +10000) |
-| `API_URL=http://localhost:18000 pytest services/orders-api/tests` | sandbox tests                                           |
+| `docker-compose.yml`, application Dockerfiles, `db/init/` | inputs to OCA's own Compose sandbox adapter; sandbox scripts are no longer required |
+| `services/orders-api/tests`, `services/loadgen/` | patched-checkout tests in OCA's test container; fixed-size sandbox load tests |
 | `git merge --no-ff fix/<ticket> && ops/deploy.sh "<ticket>"` | the `deploy_patch` action (the gate is the only thing allowed to run it) |
 | `ops/inject.sh timeout\|loyalty`, `ops/reset.sh` | demo trigger and reset (run by a human in the clone)                    |
 
@@ -787,6 +812,7 @@ oca/                               # repository root
 │   ├── auth.py                    # bearer tokens, session cookie, require(roles)
 │   ├── allowlist.yaml, gate.py    # command check gate
 │   ├── sandbox.py                 # sandbox manager (prepare / patch / validate / teardown)
+│   ├── environments/              # OCA-owned Compose lifecycle, company profiles, test image
 │   ├── backup.py, executor.py     # git-tag backup; staged rollout + verify + auto-restore
 │   ├── pipeline.py                # runs models.orchestrator in-process per ticket
 │   ├── fakeco/                    # FakecoRunner protocol, SubprocessRunner (real), FakeRunner (dry), diffcheck, prometheus
@@ -795,7 +821,7 @@ oca/                               # repository root
 │   ├── web/, templates/, static/  # dashboard: Jinja2 + vendored htmx/SSE/Alpine/Pico
 │   └── integrations/              # Jira/Slack interface, policy filter, outbox (M5)
 ├── tests/                         # pytest: contracts, db, api, auth matrix, checks, gate, e2e pipeline, dashboard
-└── data/                          # runtime (gitignored): oca.db, backups/
+└── data/                          # runtime (gitignored): oca.db, backups/, sandboxes/
 ```
 
 Run everything from the repo root: `python3 -m oca.main` (server), `python3 -m models.main --ticket INC-0001` (standalone agents), `python3 -m pytest` (all tests).
@@ -837,7 +863,7 @@ Both tracks share the agent output contracts: `models/core/state.py` is the sour
 | **M1** | Driftwood up with loadgen; `ops/inject.sh timeout` visibly raises error rate in Prometheus           | everything         | Done (driftwood repo) |
 | **M2** | Health checks + ticket creation + SSE timeline. Inject → ticket appears live on the dashboard.        | A3                 | Done    |
 | **M3** | Gate + allowlist + backup + executor + approve/deny/override + auto-restore.                          | A5, A6             | Done    |
-| **M4** | Sandbox manager over `ops/sandbox.sh` with before/after metrics and tests behind `/api/tools/sandbox/*`. | A4             | Done (dry mode verified; real mode pending GX10 run) |
+| **M4** | OCA-owned Compose sandbox and company profile, with before/after metrics and containerized tests behind `/api/tools/sandbox/*`. | A4 | Implemented (local tests pass; real Docker/GX10 run pending) |
 | **M5** | Jira integration: inbound polling → ticket, outbound comments/transitions via outbox, policy filter, Integrations page. | demo (Jira variant) | Planned |
 | **M6** | Dashboard: dash, tickets, live ticket detail, deployments, health, logs, settings. Slack (stretch).  | demo               | Done (charts deferred) |
 | **M7** | End-to-end with all three agents on the GX10 against the real driftwood clone; offline demo.         | judging            | Next    |
@@ -878,7 +904,7 @@ Recorded so nobody re-litigates them by accident. Any can be overturned by the t
 | **D7** | **Naming.** Top-level `models/` is the agent package; the platform package is `oca/` with contracts in `oca/schemas.py`. One root `requirements.txt`. All settings are `OCA_*` environment variables.               |
 | **D8** | **External ticketing is mirror-only and policy-filtered.** Jira/Slack never hold evidence and never receive logs, code, diffs, or metrics. Outbound text is templated from whitelisted fields; `outbound_detail` defaults to `minimal` for Jira Cloud, `summary` for self-hosted. Delivery goes through a retrying outbox so an unreachable Jira never blocks the pipeline. Approve/deny is dashboard-only; Jira comments are never instructions. |
 | **D9** | **The platform conforms to the agent contracts.** `models/` is stdlib-only and never imports `oca/`; `oca/schemas.py` mirrors `models/core/state.py` and `/api/tools/*` accepts exactly the shapes in `models/tools/catalog.py`. A test enforces parity. |
-| **D10** | **One runner seam.** Everything that touches the company under test goes through `FakecoRunner`: `SubprocessRunner` wraps driftwood's own ops scripts in its standalone clone (`OCA_FAKECO_ROOT`); `FakeRunner` models both incidents deterministically so the pipeline, tests and demo run without Docker. Driftwood's repo is never modified by OCA. |
+| **D10** | **One runner seam.** Everything that touches the company under test goes through `FakecoRunner`: `SubprocessRunner` uses OCA's Compose sandbox adapter plus Driftwood's production ops in its standalone clone (`OCA_FAKECO_ROOT`); `FakeRunner` models both incidents deterministically. Sandbox edits occur only in OCA's worktree; approved deployment may update the company's checkout. |
 | **D11** | **Server-measured evidence only.** The sandbox manager records BEFORE/AFTER metrics and test results itself; the gate reloads the sandbox run and the Guardian review from the database and ignores the evidence block's values. Diffs are validated and applied server-side on `fix/<ticket>`. |
 
 ---

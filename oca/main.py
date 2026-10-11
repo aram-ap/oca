@@ -83,7 +83,8 @@ def build_runner(settings: Settings):
         from oca.fakeco.subprocess_runner import SubprocessRunner
 
         return SubprocessRunner(settings.fakeco_root, settings.prom_url, settings.sandbox_prom_url,
-                                settings.sandbox_api_url, settings.service_urls)
+                                settings.sandbox_api_url, settings.service_urls,
+                                data_dir=settings.data_dir, sandbox_profile=settings.sandbox_profile)
     from oca.fakeco.fake_runner import FakeRunner
 
     return FakeRunner()

@@ -1,4 +1,4 @@
-"""Real driftwood runner: shells out to the standalone clone's ops scripts, git and docker compose.
+"""Real driftwood runner: OCA-owned sandbox, company production ops, git and Compose.
 
 Argument vectors are fixed constants plus validated values; nothing here ever runs a
 model-supplied string as a command.
@@ -23,6 +23,8 @@ from oca.fakeco.runner import (
     StatusSnapshot, check_readable_path,
 )
 from oca.schemas import SandboxMetrics, TestRunResult
+from oca.environments.compose import ComposeSandbox
+from oca.environments.profile import load_profile
 
 log = logging.getLogger("oca.runner")
 
@@ -38,9 +40,9 @@ class SubprocessRunner:
     mode = "real"
 
     def __init__(self, root: Path, prom_url: str, sandbox_prom_url: str, sandbox_api_url: str,
-                 service_urls: dict[str, str], loadtest_rate: int = 30) -> None:
+                 service_urls: dict[str, str], loadtest_rate: int = 30,
+                 data_dir: Path = Path("data"), sandbox_profile: Path | None = None) -> None:
         self.root = Path(root).expanduser().resolve()
-        self.worktree = self.root / ".sandbox"
         self.prom = PromClient(prom_url)
         self.sandbox_prom = PromClient(sandbox_prom_url)
         self.sandbox_api_url = sandbox_api_url
@@ -50,28 +52,40 @@ class SubprocessRunner:
         self._mutate = asyncio.Lock()
         if not (self.root / "ops" / "deploy.sh").exists():
             raise RunnerError(f"{self.root} does not look like a driftwood clone (ops/deploy.sh missing)")
+        self.sandbox = ComposeSandbox(self.root, data_dir, load_profile(sandbox_profile),
+                                      sandbox_api_url, sandbox_prom_url, self._sandbox_run)
+        self.worktree = self.sandbox.worktree
+
+    async def _sandbox_run(self, *argv: str, **kwargs):
+        return await self._run(*argv, **kwargs)
 
     # ------------------------------------------------------------ plumbing
 
     async def _run(self, *argv: str, cwd: Path | None = None, timeout: float = 120, env: dict[str, str] | None = None,
-                   stdin: str | None = None, check: bool = True) -> tuple[int, str, str]:
-        full_env = {**os.environ, **(env or {})}
+                   stdin: str | None = None, check: bool = True, inherit_env: bool = True,
+                   record_output: bool = True) -> tuple[int, str, str]:
+        full_env = {**(os.environ if inherit_env else {}), **(env or {})}
         proc = await asyncio.create_subprocess_exec(
             *argv, cwd=str(cwd or self.root), env=full_env,
             stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         try:
             out, err = await asyncio.wait_for(proc.communicate(stdin.encode() if stdin is not None else None), timeout)
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
             proc.kill()
             await proc.wait()
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             raise RunnerError(f"{argv[0]} timed out after {timeout}s", list(argv), None)
         stdout, stderr = out.decode(errors="replace"), err.decode(errors="replace")
-        self.calls.append({"argv": list(argv), "rc": proc.returncode, "stdout_tail": stdout[-300:], "stderr_tail": stderr[-500:]})
+        self.calls.append({"argv": list(argv), "rc": proc.returncode,
+                           "stdout_tail": stdout[-300:] if record_output else "[redacted]",
+                           "stderr_tail": stderr[-500:] if record_output else "[redacted]"})
         del self.calls[:-200]
         if check and proc.returncode != 0:
-            raise RunnerError(f"{' '.join(argv[:3])} failed (rc={proc.returncode}): {stderr.strip()[-800:]}",
-                              list(argv), proc.returncode, stderr)
+            detail = stderr if record_output else "[output redacted]"
+            raise RunnerError(f"{' '.join(argv[:3])} failed (rc={proc.returncode}): {detail.strip()[-800:]}",
+                              list(argv), proc.returncode, detail)
         return proc.returncode, stdout, stderr
 
     @staticmethod
@@ -231,42 +245,39 @@ class SubprocessRunner:
     # ------------------------------------------------------------- sandbox
 
     async def sandbox_up(self, ref: str | None = None) -> SandboxInfo:
-        argv = ["ops/sandbox.sh", "up"]
-        if ref:
-            self._check_ref(ref)
-            argv.append(ref)
+        ref = ref or await self.prod_sha()
+        self._check_ref(ref)
         async with self._mutate:
-            _, out, _ = await self._run(*argv, timeout=1200)
-        info = self._last_json(out)
-        return SandboxInfo(git_sha=str(info.get("git_sha", "")), version=str(info.get("version", "")), ref=ref)
+            return await self.sandbox.up(ref)
 
     async def sandbox_loadtest(self, n: int) -> SandboxMetrics:
         n = max(1, min(int(n), 10000))
-        _, out, _ = await self._run("ops/sandbox.sh", "loadtest", str(n), timeout=900,
-                                    env={"LOADTEST_RATE": str(self.loadtest_rate)})
+        _, out, _ = await self.sandbox.loadtest(n, self.loadtest_rate)
         data = self._last_json(out)
+        if not isinstance(data.get("requests"), int) or data["requests"] <= 0:
+            raise RunnerError("Sandbox load test returned no measured requests")
         return SandboxMetrics(**{k: data.get(k, 0) for k in ("requests", "failures", "error_rate_pct", "rps", "p50_ms",
                                                                 "p95_ms", "p99_ms")},
                               statuses={str(k): int(v) for k, v in (data.get("statuses") or {}).items()},
                               by_endpoint=dict(data.get("by_endpoint") or {}))
 
     async def sandbox_tests(self) -> TestRunResult:
-        argv = ["python3", "-m", "pytest", "services/orders-api/tests", "-q", "-p", "no:cacheprovider"]
-        rc, out, err = await self._run(*argv, timeout=600, env={"API_URL": self.sandbox_api_url}, check=False)
+        rc, out, err = await self.sandbox.tests()
         text = out + err
         passed = len(re.findall(r"(\d+) passed", text)) and int(re.search(r"(\d+) passed", text).group(1)) or 0
         failed_match = re.search(r"(\d+) failed", text)
         failed = int(failed_match.group(1)) if failed_match else 0
-        return TestRunResult(passed=rc == 0, total=passed + failed, failed=failed, output_tail=text[-2000:],
-                             command=f"API_URL={self.sandbox_api_url} " + " ".join(argv))
+        return TestRunResult(passed=rc == 0 and passed > 0, total=passed + failed, failed=failed, output_tail=text[-2000:],
+                             command=f"docker compose -p {self.sandbox.project} run --rm oca-tests python -m pytest "
+                                     + self.sandbox.profile.test_path)
 
     async def sandbox_reset_db(self) -> None:
         async with self._mutate:
-            await self._run("ops/sandbox.sh", "reset-db", timeout=300)
+            await self.sandbox.reset_db()
 
     async def sandbox_down(self) -> None:
         async with self._mutate:
-            await self._run("ops/sandbox.sh", "down", timeout=300)
+            await self.sandbox.down()
 
     async def apply_patch_in_sandbox(self, branch: str, diff: str, message: str) -> PatchResult:
         self._check_ref(branch)
@@ -307,8 +318,12 @@ class SubprocessRunner:
             if applied_with is None:
                 # Last resort: GNU patch tolerates offsets and fuzzy context; a dry run must succeed first.
                 for level in levels:
-                    rc, _, err = await self._run("patch", level, "--dry-run", "-f", "--fuzz=3", "--forward", "-d", str(wt),
-                                                 stdin=diff, check=False, timeout=60)
+                    try:
+                        rc, _, err = await self._run("patch", level, "--dry-run", "-f", "--fuzz=3", "--forward", "-d", str(wt),
+                                                     stdin=diff, check=False, timeout=60)
+                    except FileNotFoundError:
+                        errors.append("GNU patch is unavailable; git apply attempts failed")
+                        break
                     if rc == 0:
                         await self._run("patch", level, "-f", "--fuzz=3", "--forward", "--no-backup-if-mismatch", "-d", str(wt),
                                         stdin=diff, timeout=60)
