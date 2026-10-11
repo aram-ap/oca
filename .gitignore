@@ -221,3 +221,4 @@ __marimo__/
 
 # OCA runtime data
 data/
+.demo/
