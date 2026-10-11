@@ -48,7 +48,7 @@
 [data-theme="dark"] .badge.status-detected, [data-theme="dark"] .badge.status-investigating,
 [data-theme="dark"] .badge.status-fix_proposed, [data-theme="dark"] .badge.status-sandbox_validated,
 [data-theme="dark"] .badge.status-reviewed, [data-theme="dark"] .badge.status-gate { background: #203d52; color: #9ed7fc; }
-[data-theme="dark"] .badge.status-awaiting_approval, [data-theme="dark"] .badge.sev-medium { background: #403821; color: #f4d082; }
+[data-theme="dark"] .badge.status-awaiting_approval, [data-theme="dark"] .badge.status-awaiting_verification, [data-theme="dark"] .badge.sev-medium { background: #403821; color: #f4d082; }
 [data-theme="dark"] .badge.status-approved, [data-theme="dark"] .badge.status-deploying { background: #36304d; color: #d1b9ff; }
 [data-theme="dark"] .badge.sev-high { background: #443025; color: #f5bb8c; }
 [data-theme="dark"] .badge.sev-low { background: #253643; color: #c1d1dc; }

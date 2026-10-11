@@ -36,7 +36,7 @@ DEFAULT_STATUS_MAP: dict[str, str] = {
     TicketStatus.detected.value: "To Do",
     **{s.value: "In Progress" for s in (TicketStatus.investigating, TicketStatus.fix_proposed, TicketStatus.sandbox_validated,
                                         TicketStatus.reviewed, TicketStatus.gate, TicketStatus.awaiting_approval,
-                                        TicketStatus.approved, TicketStatus.deploying)},
+                                        TicketStatus.approved, TicketStatus.deploying, TicketStatus.awaiting_verification)},
     TicketStatus.resolved.value: "Done",
     TicketStatus.denied.value: "To Do",
     TicketStatus.rolled_back.value: "To Do",

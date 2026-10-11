@@ -130,6 +130,28 @@ async def deny(ticket_id: str, body: DecisionIn | None = None, db: Database = De
     return {"ticket_id": ticket_id, "action_id": action.id, "status": "denied"}
 
 
+@router.post("/tickets/{ticket_id}/confirm")
+async def confirm(ticket_id: str, request: Request, body: DecisionIn | None = None, db: Database = Depends(get_db),
+                  principal: Principal = Depends(require(Role.admin))):
+    """A deployment held for verification (improved but still breaching) is confirmed as the resolution."""
+    try:
+        dep = await request.app.state.executor.confirm(ticket_id, f"human:{principal.name}", (body.note if body else None) or "")
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    return {"ticket_id": ticket_id, "deployment_id": dep.id, "status": "resolved"}
+
+
+@router.post("/tickets/{ticket_id}/rollback")
+async def rollback_held(ticket_id: str, request: Request, body: DecisionIn | None = None, db: Database = Depends(get_db),
+                        principal: Principal = Depends(require(Role.admin))):
+    """A deployment held for verification is rolled back to its backup."""
+    try:
+        dep = await request.app.state.executor.reject(ticket_id, f"human:{principal.name}", (body.note if body else None) or "")
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    return {"ticket_id": ticket_id, "deployment_id": dep.id, "status": "rolled_back"}
+
+
 @router.get("/tickets/{ticket_id}/action", response_model=Action)
 async def current_action(ticket_id: str, db: Database = Depends(get_db), _: Principal = Depends(require(
         Role.admin, Role.orchestrator, Role.investigator, Role.engineer, Role.guardian, Role.health))):

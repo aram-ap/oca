@@ -23,6 +23,19 @@
   </div>
   {% endif %}
   {% if deployment %}<p class="muted">Deployment {{ deployment.id }} · {{ deployment.status.value }}{% if deployment.backup_ref %} · backup <code>{{ deployment.backup_ref }}</code>{% endif %}</p>{% endif %}
+  {% if ticket.status.value == "awaiting_verification" and deployment %}
+  <p><strong>Held for verification.</strong> The change is deployed and production improved, but it still breaches an SLO. If external load explains the rest, confirm; otherwise roll back to <code>{{ deployment.backup_ref }}</code>.</p>
+  <div class="actions" x-data>
+    <form hx-post="/tickets/{{ ticket.id }}/confirm" hx-target="#gate-panel" hx-swap="outerHTML" hx-confirm="Confirm {{ deployment.id }} as the resolution of {{ ticket.id }}?">
+      <input type="hidden" name="note" value="confirmed from dashboard">
+      <button type="submit">Confirm resolved</button>
+    </form>
+    <form hx-post="/tickets/{{ ticket.id }}/rollback" hx-target="#gate-panel" hx-swap="outerHTML" hx-confirm="Roll {{ deployment.id }} back to its backup?">
+      <input type="hidden" name="note" value="rolled back from dashboard">
+      <button type="submit" class="secondary">Roll back</button>
+    </form>
+  </div>
+  {% endif %}
   {% if ticket.status.value in ("failed", "denied") %}
   <form method="post" action="/tickets/{{ ticket.id }}/run" style="margin-top:.5rem"><button class="outline secondary">Re-run agents</button></form>
   {% endif %}

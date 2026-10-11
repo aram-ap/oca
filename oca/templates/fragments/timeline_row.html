@@ -17,7 +17,7 @@
       {% if p.applied %}<span class="badge ok">applied</span> to <code>{{ p.branch }}</code>{% if p.commit %} @ <code>{{ p.commit }}</code>{% endif %} ({{ p.files_changed | join(", ") }}){% else %} <span class="muted">{{ p.error }}</span>{% endif %}
       {% if p.diff %}<details class="diff-block" {% if p.applied %}open{% endif %}><summary>diff{% if p.diff_truncated %} (truncated){% endif %}{% if p.key %} · {{ p.key }}={{ p.value }}{% endif %}</summary>{{ p.diff | diff_html }}</details>{% endif %}
     {% endif %}
-    {% if p.tool == "run_loadtest" %} {{ p.phase }}: error rate {{ p.error_rate_pct }}% · p95 {{ p.p95_ms }} ms{% endif %}
+    {% if p.tool == "run_loadtest" %} {{ p.phase }}: error rate {{ p.error_rate_pct }}% · p95 {{ p.p95_ms }} ms{% if p.db_pool_utilization_pct is not none %} · DB pool {{ p.db_pool_utilization_pct }}%{% endif %}{% if p.rate %} <span class="muted">({{ p.requests }} req at {{ p.rate }} rps)</span>{% endif %}{% endif %}
     {% if p.tool == "run_tests" %} tests <span class="badge {{ 'ok' if p.passed else 'bad' }}">{{ "passed" if p.passed else (p.failed ~ " failed") }}</span>{% if p.command %} <code class="cmd">$ {{ p.command }}</code>{% endif %}
       {% if p.output %}<details><summary>test output</summary><pre>{{ p.output }}</pre></details>{% endif %}{% endif %}
     {% if p.commands %}<details class="commands"><summary>{{ p.commands | length }} command{{ "s" if p.commands | length != 1 }} run</summary>
@@ -38,8 +38,12 @@
       <tr><th></th><th>Baseline</th><th>Before fix</th><th>After fix</th></tr>
       <tr><td>Error rate</td><td>{{ p.baseline.error_rate_pct if p.baseline else "—" }}%</td><td>{{ p.before.error_rate_pct if p.before else "—" }}%</td><td>{{ p.after.error_rate_pct if p.after else "—" }}{% if p.after %}%{% endif %}</td></tr>
       <tr><td>P95</td><td>{{ p.baseline.p95_latency_ms if p.baseline else "—" }} ms</td><td>{{ p.before.p95_ms if p.before else "—" }} ms</td><td>{{ p.after.p95_ms if p.after else "—" }}{% if p.after %} ms{% endif %}</td></tr>
+      {% if (p.before and p.before.db_pool_utilization_pct is not none) or (p.after and p.after.db_pool_utilization_pct is not none) %}
+      <tr><td>DB pool</td><td>—</td><td>{{ p.before.db_pool_utilization_pct if p.before and p.before.db_pool_utilization_pct is not none else "—" }}{% if p.before and p.before.db_pool_utilization_pct is not none %}%{% endif %}</td><td>{{ p.after.db_pool_utilization_pct if p.after and p.after.db_pool_utilization_pct is not none else "—" }}{% if p.after and p.after.db_pool_utilization_pct is not none %}%{% endif %}</td></tr>
+      {% endif %}
       <tr><td>Tests</td><td>PASS</td><td>—</td><td>{% if p.tests %}{{ "PASS" if p.tests.passed else "FAIL (" ~ p.tests.failed ~ ")" }}{% else %}—{% endif %}</td></tr>
     </table>
+    {% if p.load %}<div class="muted" style="font-size:.78rem">load: {{ p.load.requests }} requests at {{ p.load.rate }} rps{% if p.breaches %} · breaches: {{ p.breaches | join(", ") }}{% endif %}</div>{% endif %}
   {% elif e.type.value == "review" %}
     {% set r = p.review %}
     <strong>RELEASE REVIEW</strong> <span class="badge {{ 'ok' if r.decision == 'APPROVE' else 'bad' }}">{{ r.decision }}</span> <span class="badge">risk {{ r.risk_score }}/100</span>
@@ -51,10 +55,10 @@
     <strong>COMMAND GATE</strong> <span class="badge status-{{ 'denied' if p.status == 'denied' else 'awaiting_approval' }}">{{ p.status | replace("_"," ") }}</span>
     <ul class="checklist">{% for c in p.checks %}<li class="{{ 'ok' if c.ok else ('fail' if c.ok is false else 'skip') }}">{{ c.n }}. {{ c.name | replace("_"," ") }} — {{ c.detail }}</li>{% endfor %}</ul>
   {% elif e.type.value == "human_decision" %}
-    <strong>Operator {{ p.decision }}d</strong>{% if p.override %} (override of a denied action){% endif %}{% if p.note %}: {{ p.note }}{% endif %}
+    <strong>Operator {{ {"approve": "approved", "deny": "denied", "confirm": "confirmed the held deployment", "roll back": "rolled the held deployment back"}.get(p.decision, p.decision) }}</strong>{% if p.override %} (override of a denied action){% endif %}{% if p.note %}: {{ p.note }}{% endif %}
   {% elif e.type.value == "run" %}
     <strong>{{ p.stage | replace("_"," ") }}</strong>{% if p.pct is defined %} · {{ p.pct }}%{% endif %}
-    {% if p.stage == "verify" %} run {{ p.run }}/{{ p.of }} {{ "✓" if p.ok else "✗" }} {{ p.detail }}{% elif p.stage == "monitor" %} {{ "✓" if p.ok else "✗" }} {{ p.detail }}{% elif p.stage == "snapshot" %} backup <code>{{ p.backup_ref }}</code>{% elif p.stage == "auto_restore" %} <span class="badge bad">{{ p.reason }}</span>{% endif %}
+    {% if p.stage == "verify" %} run {{ p.run }}/{{ p.of }} {{ "✓" if p.ok else "✗" }} {{ p.detail }}{% elif p.stage == "monitor" %} {{ "✓" if p.ok else "✗" }} {{ p.detail }}{% elif p.stage == "snapshot" %} backup <code>{{ p.backup_ref }}</code>{% elif p.stage == "auto_restore" %} <span class="badge bad">{{ p.reason }}</span>{% elif p.stage == "hold" %} <span class="badge status-awaiting_verification">held</span> {{ p.reason }}{% endif %}
   {% elif e.type.value == "resolved" %}
     <strong>INCIDENT RESOLVED</strong> via {{ p.deployment_id }}
     {% set m = p.mttr %}

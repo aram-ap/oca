@@ -5,7 +5,7 @@ nav.topbar strong { letter-spacing: .04em; }
          text-transform: uppercase; letter-spacing: .04em; background: var(--pico-muted-border-color); color: var(--pico-contrast); }
 .badge.status-detected, .badge.status-investigating, .badge.status-fix_proposed, .badge.status-sandbox_validated,
 .badge.status-reviewed, .badge.status-gate { background: #2b5797; color: #fff; }
-.badge.status-awaiting_approval { background: #e0a800; color: #000; }
+.badge.status-awaiting_approval, .badge.status-awaiting_verification { background: #e0a800; color: #000; }
 .badge.status-approved, .badge.status-deploying { background: #6f42c1; color: #fff; }
 .badge.status-resolved, .badge.status-succeeded, .badge.ok { background: #1e7e34; color: #fff; }
 .badge.status-denied, .badge.status-failed, .badge.status-rolled_back, .badge.bad { background: #b02a37; color: #fff; }
@@ -99,7 +99,7 @@ nav .nav-links a[aria-current="page"] { background: #eaf4f0; color: #176b57; fon
 .badge.ok, .badge.status-resolved, .badge.status-succeeded { background: #eaf5ef; color: #176343; }
 .badge.bad, .badge.status-denied, .badge.status-failed, .badge.status-rolled_back, .badge.sev-critical { background: #fceced; color: #a9283e; }
 .badge.status-detected, .badge.status-investigating, .badge.status-fix_proposed, .badge.status-sandbox_validated, .badge.status-reviewed, .badge.status-gate { background: #eaf1fc; color: #285b9e; }
-.badge.status-awaiting_approval, .badge.sev-medium { background: #fbf2dc; color: #805b10; }
+.badge.status-awaiting_approval, .badge.status-awaiting_verification, .badge.sev-medium { background: #fbf2dc; color: #805b10; }
 .badge.status-approved, .badge.status-deploying { background: #f0ecfa; color: #6743a0; }.badge.sev-high { background: #fff0e5; color: #9a4517; }.badge.sev-low { background: #edf1f5; color: #566477; }
 .model-detail { display: flex; gap: 13px; align-items: center; margin-bottom: 19px; }.model-icon { width: 38px; height: 38px; border-radius: 9px; background: #edf4f1; color: #176b57; display: grid; place-items: center; font-size: 1.6rem; }.model-detail strong { font-size: .9rem; font-weight: 600; }.model-detail small { display: block; font-size: .73rem; color: #637286; margin-top: 4px; }
 .ai-details { margin: 0; font-size: .76rem; }.ai-details > div { display: flex; justify-content: space-between; gap: 16px; padding: 9px 0; border-top: 1px solid #edf0f4; }.ai-details dt { color: #637286; }.ai-details dd { margin: 0; text-align: right; font-weight: 500; }

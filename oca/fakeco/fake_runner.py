@@ -168,6 +168,7 @@ class FakeRunner:
         self.version = BASELINE_VERSION
         self.sha = BASELINE_SHA
         self.worse = False
+        self.partial = False
         self.migrations: set[str] = {"001_baseline.sql"}
         self.commits: list[GitCommit] = [GitCommit(BASELINE_SHA, "ops <ops@driftwood.coffee>",
                                                    (_now() - timedelta(days=3)).isoformat(), "Baseline v1.3.0")]
@@ -220,6 +221,10 @@ class FakeRunner:
             base.update({"error_rate_pct": 85.0, "p95_latency_ms": 30000.0, "db_pool_utilization_pct": 100.0,
                          "db_errors_per_s": 40.0, "db_errors": {"pool_exhausted:acquire": 40.0},
                          "breaches": ["error_rate_pct", "p95_latency_ms", "db_pool_utilization_pct"]})
+        elif incident and self.partial:  # a deploy that helped but did not clear the SLO breach (load still on)
+            base.update({"error_rate_pct": round(base["error_rate_pct"] / 3, 2), "p95_latency_ms": round(base["p95_latency_ms"] / 4, 1)})
+            base["breaches"] = [k for k in ("error_rate_pct", "p95_latency_ms", "db_pool_utilization_pct")
+                                if base.get(k, 0) > {"error_rate_pct": 5.0, "p95_latency_ms": 1000.0, "db_pool_utilization_pct": 90.0}[k]]
         jitter = self._rng.uniform(-0.02, 0.02)
         base["error_rate_pct"] = round(max(0.0, base["error_rate_pct"] * (1 + jitter)), 2)
         base["p95_latency_ms"] = round(base["p95_latency_ms"] * (1 + jitter), 1)
@@ -413,16 +418,20 @@ class FakeRunner:
         if not self.sandbox["up"]:
             raise RunnerError("sandbox is not running; call sandbox_up first")
 
-    async def sandbox_loadtest(self, n: int) -> SandboxMetrics:
+    async def sandbox_loadtest(self, n: int, rate: int | None = None) -> SandboxMetrics:
         self._require_sandbox()
-        self.calls.append(f"python3 ops/loadtest.py --sandbox --requests {n} --json")
+        rate = int(rate or 30)
+        self.calls.append(f"python3 ops/loadtest.py --sandbox --requests {n} --rate {rate} --json")
         incident, _ = self._branch_state(self.sandbox["ref"] or self.sandbox["sha"])
         base = dict(INCIDENTS[incident]["loadtest"]) if incident else dict(HEALTHY_LOADTEST)
+        status = dict(INCIDENTS[incident]["status"]) if incident else dict(HEALTHY_STATUS)
         failures = int(round(n * base["error_rate_pct"] / 100))
         statuses = {"200": n - failures, "500": failures} if failures else {"200": n}
         return SandboxMetrics(requests=n, failures=failures, error_rate_pct=round(100 * failures / n, 2) if n else 0.0,
-                              rps=29.6, p50_ms=base["p50_ms"], p95_ms=base["p95_ms"], p99_ms=base["p99_ms"],
-                              statuses=statuses, by_endpoint=base["by_endpoint"])
+                              rps=float(rate) * 0.99, p50_ms=base["p50_ms"], p95_ms=base["p95_ms"], p99_ms=base["p99_ms"],
+                              statuses=statuses, by_endpoint=base["by_endpoint"],
+                              db_pool_utilization_pct=status.get("db_pool_utilization_pct"),
+                              db_errors_per_s=status.get("db_errors_per_s"), rate=rate)
 
     async def sandbox_tests(self) -> TestRunResult:
         self._require_sandbox()
@@ -501,17 +510,21 @@ class FakeRunner:
         if "deploy_fails" in self.failure_modes:
             raise RunnerError("ops/deploy.sh failed", rc=1, stderr="orders-api did not become healthy")
         b = self.branches[branch]
-        self.config.update(b["config"])
-        self.migrations |= b["migrations"]
         self.worse = "deploy_makes_worse" in self.failure_modes
+        self.partial = "deploy_partially_helps" in self.failure_modes
+        if not self.partial:  # a partial deploy relieves production without clearing the incident
+            self.config.update(b["config"])
+            self.migrations |= b["migrations"]
         return self._record(branch, list(b["files"]), note)
 
     async def set_config_and_deploy(self, key: str, value: int, note: str) -> DeployRecord:
         self.calls.append(f"ops/deploy.sh (set {key}={value})")
         if "deploy_fails" in self.failure_modes:
             raise RunnerError("ops/deploy.sh failed", rc=1)
-        self.config[key] = value
         self.worse = "deploy_makes_worse" in self.failure_modes
+        self.partial = "deploy_partially_helps" in self.failure_modes
+        if not self.partial:
+            self.config[key] = value
         return self._record(f"set {key}={value} ({note})", ["services/orders-api/config/app.env"], note)
 
     async def restart_service(self, service: str) -> None:

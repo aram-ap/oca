@@ -7,6 +7,7 @@ never the Engineer's own claims.
 from __future__ import annotations
 
 import asyncio
+import math
 import logging
 import re
 from typing import Any
@@ -23,6 +24,10 @@ log = logging.getLogger("oca.sandbox")
 
 
 RECORDED_DIFF_CHARS = 4000
+DEFAULT_LOAD_RATE = 30     # requests/s when production's rate is unknown
+MAX_LOAD_RATE = 200
+LOAD_MARGIN = 1.5          # sandbox rate = production rate at detection x margin
+MIN_LOADTEST_S = 40        # long enough for the sandbox Prometheus to record pool utilisation
 RECORDED_OUTPUT_CHARS = 1500
 MAX_RECORDED_COMMANDS = 40
 APP_ENV = "services/orders-api/config/app.env"
@@ -49,7 +54,30 @@ class SandboxManager:
     async def _thresholds(self) -> dict[str, float]:
         stored = await self.db.get_setting("thresholds", {}) or {}
         return {"error_rate_pct": float(stored.get("error_rate_pct", 5.0)),
-                "p95_latency_ms": float(stored.get("p95_latency_ms", 1000.0))}
+                "p95_latency_ms": float(stored.get("p95_latency_ms", 1000.0)),
+                "db_pool_utilization_pct": float(stored.get("db_pool_utilization_pct", 90.0))}
+
+    async def _load(self, ticket_id: str, requests: int | None = None) -> tuple[int, int]:
+        """(requests, rate) for a sandbox load test: production's request rate at detection with a margin.
+
+        A fixed 30 rps never reproduces a load-driven incident. The run lasts at least
+        MIN_LOADTEST_S so the sandbox Prometheus sees pool utilisation during the test.
+        """
+        ticket = await self.db.get_ticket(ticket_id)
+        detect_rps = float(((ticket.metrics_at_detect if ticket else None) or {}).get("rps") or 0.0)
+        rate = int(min(MAX_LOAD_RATE, max(DEFAULT_LOAD_RATE, math.ceil(detect_rps * LOAD_MARGIN))))
+        n = int(requests or self.settings.loadtest_requests)
+        n = min(10_000, max(n, rate * MIN_LOADTEST_S))
+        return n, rate
+
+    async def _production(self) -> dict[str, Any]:
+        """The live production SLO state, attached to prepare() so the orchestrator can tell
+        'not reproduced but production is still down' from a transient blip."""
+        try:
+            snap = await self.runner.status()
+        except Exception as exc:  # noqa: BLE001 - informational
+            return {"healthy": None, "breaches": [], "error": str(exc)[:200]}
+        return {"healthy": snap.healthy, "breaches": list(snap.breaches), "metrics": snap.metrics()}
 
     async def _baseline(self) -> dict[str, float]:
         stored = await self.db.get_setting("baseline", {}) or {}
@@ -70,11 +98,14 @@ class SandboxManager:
         self.active_ticket = run.ticket_id
 
     def _breaches(self, metrics: SandboxMetrics, thresholds: dict[str, float]) -> list[str]:
+        """The production detector's SLO set, applied to what the sandbox measured."""
         out = []
         if metrics.error_rate_pct > thresholds["error_rate_pct"]:
             out.append("error_rate_pct")
         if metrics.p95_ms > thresholds["p95_latency_ms"]:
             out.append("p95_latency_ms")
+        if metrics.db_pool_utilization_pct is not None and metrics.db_pool_utilization_pct > thresholds["db_pool_utilization_pct"]:
+            out.append("db_pool_utilization_pct")
         return out
 
     # ------------------------------------------------------- orchestrator steps
@@ -93,7 +124,8 @@ class SandboxManager:
                 self.active_ticket = ticket_id
                 info = await self.runner.sandbox_up(prod_sha)
                 run = await self.db.create_sandbox_run(ticket_id, info.git_sha or prod_sha, await self._baseline())
-                before = await self.runner.sandbox_loadtest(self.settings.loadtest_requests)
+                n, rate = await self._load(ticket_id)
+                before = await self.runner.sandbox_loadtest(n, rate)
                 thresholds = await self._thresholds()
                 breaches = self._breaches(before, thresholds)
                 reproduced = bool(breaches)
@@ -106,11 +138,12 @@ class SandboxManager:
                 except Exception:
                     log.exception("sandbox cleanup after failed preparation needs retry")
                 raise
+        production = await self._production()
         await self._event(ticket_id, Actor.orchestrator, EventType.sandbox_result, {
             "phase": "before", "sandbox_run_id": run.id, "git_sha": run.base_sha, "reproduced": reproduced,
             "breaches": breaches, "before": before.model_dump(), "baseline": run.baseline,
-            "detect": ticket.metrics_at_detect or {}})
-        return run
+            "detect": ticket.metrics_at_detect or {}, "load": {"requests": n, "rate": rate}, "production": production})
+        return run.model_copy(update={"production": production})
 
     async def validate(self, ticket_id: str) -> SandboxRun:
         """Rebuild on the fix branch, measure AFTER, run tests, compare with baseline."""
@@ -122,17 +155,18 @@ class SandboxManager:
             raise SandboxError("no patch has been applied in the sandbox")
         async with self._lock:
             await self._ensure_up(run)
-            after = await self.runner.sandbox_loadtest(self.settings.loadtest_requests)
+            n, rate = await self._load(ticket_id)
+            after = await self.runner.sandbox_loadtest(n, rate)
             tests = await self.runner.sandbox_tests()
             thresholds = await self._thresholds()
             breaches = self._breaches(after, thresholds)
             improved = run.before is None or after.error_rate_pct <= max(run.before.error_rate_pct / 4, thresholds["error_rate_pct"])
-            passed = tests.passed and not breaches and improved
+            passed = tests.passed and not breaches and improved  # `not breaches` covers pool and latency too
             run = await self.db.update_sandbox_run(run.id, after=after, tests=tests, passed=passed)
         await self._event(ticket_id, Actor.orchestrator, EventType.sandbox_result, {
             "phase": "after", "sandbox_run_id": run.id, "patch_ref": run.patch_ref, "passed": passed,
             "breaches": breaches, "tests": tests.model_dump(), "before": run.before.model_dump() if run.before else None,
-            "after": after.model_dump(), "baseline": run.baseline})
+            "after": after.model_dump(), "baseline": run.baseline, "load": {"requests": n, "rate": rate}})
         return run
 
     async def teardown(self, ticket_id: str) -> None:
@@ -245,12 +279,12 @@ class SandboxManager:
 
     async def run_loadtest(self, ticket_id: str, requests: int | None) -> dict[str, Any]:
         run = await self._run_for(ticket_id)
-        n = requests or self.settings.loadtest_requests
+        n, rate = await self._load(ticket_id, requests)
         async with self._lock:
             mark = self._mark()
             if self.active_ticket != ticket_id:
                 await self._ensure_up(run)
-            metrics = await self.runner.sandbox_loadtest(n)
+            metrics = await self.runner.sandbox_loadtest(n, rate)
             thresholds = await self._thresholds()
             breaches = self._breaches(metrics, thresholds)
             phase = "after" if run.patch_ref else "before"
@@ -260,8 +294,9 @@ class SandboxManager:
                 run = await self.db.update_sandbox_run(run.id, after=metrics)
             commands = self._commands(mark)
         await self._event(ticket_id, Actor.engineer, EventType.finding, {
-            "tool": "run_loadtest", "phase": phase, "requests": n, "error_rate_pct": metrics.error_rate_pct,
-            "p95_ms": metrics.p95_ms, "breaches": breaches, "commands": commands})
+            "tool": "run_loadtest", "phase": phase, "requests": n, "rate": rate, "error_rate_pct": metrics.error_rate_pct,
+            "p95_ms": metrics.p95_ms, "db_pool_utilization_pct": metrics.db_pool_utilization_pct, "breaches": breaches,
+            "commands": commands})
         return {"evidence_ref": f"sandbox:{run.id}:loadtest:{phase}", "sandbox_run_id": run.id, "phase": phase,
                 "ref": run.patch_ref or run.base_sha, "metrics": metrics.model_dump(), "breaches": breaches,
                 "baseline": run.baseline, "thresholds": thresholds, "incident_present": bool(breaches)}

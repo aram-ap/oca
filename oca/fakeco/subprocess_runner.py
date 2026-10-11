@@ -35,6 +35,7 @@ SERIES = ("orders_api:error_rate:1m", "orders_api:p95_latency_seconds:1m", "orde
 GIT_IDENTITY = ("-c", "user.name=OCA Executor", "-c", "user.email=oca@localhost")
 ENGINEER_IDENTITY = ("-c", "user.name=OCA Engineer", "-c", "user.email=oca@localhost")
 MAX_FILE_BYTES = 64_000
+SLO_WINDOW = "3m"  # covers a 40 s+ load test plus Prometheus rule evaluation lag
 
 
 class SubprocessRunner:
@@ -316,16 +317,33 @@ class SubprocessRunner:
         async with self._mutate:
             return await self.sandbox.up(ref)
 
-    async def sandbox_loadtest(self, n: int) -> SandboxMetrics:
+    async def sandbox_loadtest(self, n: int, rate: int | None = None) -> SandboxMetrics:
         n = max(1, min(int(n), 10000))
-        _, out, _ = await self.sandbox.loadtest(n, self.loadtest_rate)
+        rate = max(1, min(int(rate or self.loadtest_rate), 500))
+        _, out, _ = await self.sandbox.loadtest(n, rate)
         data = self._last_json(out)
         if not isinstance(data.get("requests"), int) or data["requests"] <= 0:
             raise RunnerError("Sandbox load test returned no measured requests")
+        pool, db_errors = await self._sandbox_slo_metrics()
         return SandboxMetrics(**{k: data.get(k, 0) for k in ("requests", "failures", "error_rate_pct", "rps", "p50_ms",
                                                                 "p95_ms", "p99_ms")},
                               statuses={str(k): int(v) for k, v in (data.get("statuses") or {}).items()},
-                              by_endpoint=dict(data.get("by_endpoint") or {}))
+                              by_endpoint=dict(data.get("by_endpoint") or {}),
+                              db_pool_utilization_pct=pool, db_errors_per_s=db_errors, rate=rate)
+
+    async def _sandbox_slo_metrics(self) -> tuple[float | None, float | None]:
+        """Peak pool utilisation and DB error rate over the load test window, from the sandbox Prometheus.
+
+        The generator only sees HTTP outcomes; these are the detector's other SLO inputs. Missing
+        series (Prometheus still warming up) yield None, which never counts as a breach.
+        """
+        try:
+            pool = await self.sandbox_prom.scalar(f"100 * max(max_over_time(orders_api:db_pool_utilization[{SLO_WINDOW}]))")
+            errors = await self.sandbox_prom.scalar(f"sum(max_over_time(orders_api:db_errors:rate1m[{SLO_WINDOW}])) or vector(0)")
+        except Exception as exc:  # noqa: BLE001 - the load test result stands on its own
+            log.warning("sandbox SLO metrics unavailable: %s", exc)
+            return None, None
+        return (round(pool, 1) if pool is not None else None), (round(errors, 2) if errors is not None else None)
 
     async def sandbox_tests(self) -> TestRunResult:
         rc, out, err = await self.sandbox.tests()

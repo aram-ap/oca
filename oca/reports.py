@@ -26,7 +26,8 @@ from oca.schemas import (
 log = logging.getLogger("oca.reports")
 
 WRITE_TOOLS = ("set_config", "create_migration", "apply_patch")
-TIMELINE_STAGES = ("snapshot", "canary", "widen", "full", "verify", "monitor", "auto_restore")
+TIMELINE_STAGES = ("snapshot", "canary", "widen", "full", "verify", "monitor", "auto_restore", "hold")
+DECISIONS = {"approve": "approved", "deny": "denied", "confirm": "confirmed the held deployment", "roll back": "rolled the held deployment back"}
 REPORT_DELAY_S = 1.0  # terminal status_change and its `resolved`/`rolled_back` event arrive back to back
 
 
@@ -198,7 +199,7 @@ def build_report(ticket: Ticket, events: list[TicketEvent], mttr: MTTR | None, d
             checks = p.get("checks") or []
             line = f"command gate: {p.get('status', '').replace('_', ' ')} ({sum(1 for c in checks if c.get('ok'))}/{len(checks)} checks passed)"
         elif e.type is EventType.human_decision:
-            line = f"operator {p.get('decision')}d" + (" (override)" if p.get("override") else "") + (f": {p['note']}" if p.get("note") else "")
+            line = f"operator {DECISIONS.get(p.get('decision'), p.get('decision'))}" + (" (override)" if p.get("override") else "") + (f": {p['note']}" if p.get("note") else "")
         elif e.type is EventType.run and p.get("stage") in TIMELINE_STAGES:
             stage = p["stage"]
             if stage == "verify":
@@ -209,6 +210,8 @@ def build_report(ticket: Ticket, events: list[TicketEvent], mttr: MTTR | None, d
                 line = f"backup taken `{p.get('backup_ref')}`"
             elif stage == "auto_restore":
                 line = f"automatic restore: {p.get('reason')}"
+            elif stage == "hold":
+                line = f"**held for human verification**: {p.get('reason')}"
             else:
                 line = f"deployment stage `{stage}`" + (f" ({p['pct']}%)" if p.get("pct") is not None else "")
         elif e.type is EventType.resolved:
@@ -274,11 +277,16 @@ def build_report(ticket: Ticket, events: list[TicketEvent], mttr: MTTR | None, d
         add("| --- | --- | --- | --- |")
         add(f"| Error rate | {_pct(base.get('error_rate_pct'))} | {_pct(bm.get('error_rate_pct'))} | {_pct(am.get('error_rate_pct'))} |")
         add(f"| P95 | {_ms(base.get('p95_latency_ms'))} | {_ms(bm.get('p95_ms'))} | {_ms(am.get('p95_ms'))} |")
+        if bm.get("db_pool_utilization_pct") is not None or am.get("db_pool_utilization_pct") is not None:
+            add(f"| DB pool | — | {_pct(bm.get('db_pool_utilization_pct'))} | {_pct(am.get('db_pool_utilization_pct'))} |")
         tests_cell = ("PASS" if tests.get("passed") else f"FAIL ({tests.get('failed', '?')})") if tests else "—"
         add(f"| Tests | PASS | — | {tests_cell} |")
         add("")
+        load = a.get("load") or b.get("load") or {}
         add(f"Incident reproduced in the sandbox: {'yes' if b.get('reproduced') else 'no'}. "
-            f"Fix proven: {'yes' if a.get('passed') else 'no'}. All measurements were taken by OCA, not reported by the agents.")
+            f"Fix proven: {'yes' if a.get('passed') else 'no'}."
+            + (f" Load: {load.get('requests')} requests at {load.get('rate')} rps." if load else "")
+            + " All measurements were taken by OCA, not reported by the agents.")
     else:
         add("No sandbox measurements were recorded.")
     add("")
@@ -306,7 +314,7 @@ def build_report(ticket: Ticket, events: list[TicketEvent], mttr: MTTR | None, d
         add("")
     if human:
         p = human.payload
-        add(f"Operator {p.get('decision')}d" + (" (override of a denial)" if p.get("override") else "") + (f": {p['note']}" if p.get("note") else "") + ".")
+        add(f"Operator {DECISIONS.get(p.get('decision'), p.get('decision'))}" + (" (override of a denial)" if p.get("override") else "") + (f": {p['note']}" if p.get("note") else "") + ".")
         add("")
     elif review or gate:
         add("No human intervention was required (human approval switched off).")
@@ -324,7 +332,9 @@ def build_report(ticket: Ticket, events: list[TicketEvent], mttr: MTTR | None, d
     if rolled_back:
         follow.append(f"The deployment was rolled back ({rolled_back.payload.get('reason')}); the fix needs rework.")
     if ticket.status is TicketStatus.failed:
-        follow.append("OCA gave up; a human must take over this incident.")
+        last_change = next((e for e in reversed(events) if e.type is EventType.status_change and e.payload.get("to") == "failed"), None)
+        note = (last_change.payload.get("note") if last_change else None) or ""
+        follow.append("OCA gave up; a human must take over this incident." + (f" Reason: {note}" if note else ""))
     if errors:
         follow += [f"Error during the run ({e.payload.get('where')}): {e.payload.get('error')}" for e in errors[-5:]]
     add("## Follow-ups")

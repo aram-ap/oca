@@ -268,3 +268,27 @@ class RetryFeedbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("malformed patch at line 6", brief)
         self.assertIn("set_config", brief)
         self.assertEqual(eng.contexts[1]["feedback"], [brief])
+
+
+class NotReproducedTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_reproduction_hands_over_after_one_attempt(self):
+        platform = FakePlatform(reproduced=False)
+        platform.run["before"] = {"error_rate_pct": 0.0, "p95_ms": 201.0, "db_pool_utilization_pct": 100.0}
+        platform.run["production"] = {"healthy": False, "breaches": ["db_pool_utilization_pct"]}
+        inv = Canned(DIAG, DIAG)
+        result = await orchestrator(platform, inv, Canned(PATCH), guard(APPROVE), attempts=2).run_ticket("INC-0001")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(len(inv.contexts), 1)  # no second, identical investigation
+        self.assertEqual(platform.statuses().count("investigating"), 1)
+        note = [b for m, p, b in platform.calls if p.endswith("/status") and b["status"] == "failed"][0]["note"]
+        self.assertIn("stopped:", note)
+        self.assertIn("production still breaches db_pool_utilization_pct", note)
+        self.assertIn("DB pool 100.0%", note)
+        self.assertIn("human must take over", note)
+
+    async def test_transient_incident_is_named_as_such(self):
+        platform = FakePlatform(reproduced=False)
+        platform.run["production"] = {"healthy": True, "breaches": []}
+        result = await orchestrator(platform, Canned(DIAG), Canned(PATCH), guard(APPROVE), attempts=2).run_ticket("INC-0001")
+        self.assertEqual(result.status, "failed")
+        self.assertIn("recovered on its own", result.reason)

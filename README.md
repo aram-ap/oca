@@ -255,6 +255,10 @@ Mechanism:
 2. Engineer write tools. `set_config(ticket_id, key, value)` and `create_migration(ticket_id, name, sql)` take structured arguments and the **server writes the diff** (one `KEY=value` line in `app.env`; the next numbered `migrations/NNN_<name>.sql`), which removes the hunk-arithmetic failures small models make. `apply_patch(ticket_id, diff)` remains for code changes: the server validates the unified diff (`services/orders-api/**` or `services/frontend/**`, never `Dockerfile`/`requirements.txt`, ≤ 20 files, ≤ 2000 lines). All three create or reuse branch `fix/<ticket>` in the worktree, check, apply and commit the patch, and rebuild the sandbox. Patches are cumulative. The production checkout is not edited by sandbox operations. Every write tool records the diff, the commit and the shell commands it ran on its `finding` event; `run_tests` and `run_loadtest` record their commands and output too, so the ticket page shows exactly what the Engineer did.
 3. Engineer `run_loadtest` / `run_tests` iterate; `validate` (orchestrator) is authoritative: rebuild on `fix/<ticket>`, record **AFTER**, and run the **patched checkout's** tests in an OCA test container against the sandbox API. Compare with the baseline and SLO. Measurements and test output are attached as `sandbox_result` events and a `sandbox_runs` row.
 
+**The sandbox judges by the production detector's SLO set**, not only by what the load generator sees: after each load test OCA reads peak DB pool utilisation and DB error rate from the sandbox's own Prometheus and applies the same thresholds (5 % errors, 1 s p95, 90 % pool). A saturated pool with 0 % errors reproduces, and a fix that leaves the pool saturated is not proven. **Load matches production**: the generator runs at 1.5× the request rate production showed at detection (30–200 rps) for at least 40 s, so load-driven incidents reproduce and Prometheus has samples from inside the test window.
+
+If the incident still does not reproduce, the run stops after that attempt instead of re-investigating: `prepare` attaches the live production SLO state, and the ticket is failed with a plain-language hand-off ("production still breaches db_pool_utilization_pct; the cause is probably outside the application code" or "production has recovered; likely transient"). The Investigator's diagnosis stays on the ticket and in the report for the human who takes over.
+
 ```
                 BASELINE      BEFORE FIX     AFTER FIX
 Error rate       0.0%          25.0%          0.0%   ✓
@@ -358,6 +362,8 @@ The orchestrator picks `set_config` when the proven diff changes exactly one all
 **Restore** = `git reset --hard backup/<id>` on `main` plus `ops/deploy.sh` (the same approach as driftwood's `ops/reset.sh`). Exposed as `POST /api/deployments/{id}/restore` and the **Restore Backup** button on the Past Deployments page, and triggered automatically when post-deploy health is worse. A restore is itself recorded as a `rollback` deployment. Note: restoring code does not undo a DB migration already applied (the loyalty index stays); `ops/reset_db.sh` is the manual remedy.
 
 ### 4.8 Run executor
+
+**Verification is three-way.** Before the change the executor snapshots production's SLO metrics. After the staged rollout it runs the primary check `OCA_VERIFY_RUNS` times: healthy every time → `resolved`; a breaching metric more than 10 % above its pre-deploy value, or a new breach → automatic rollback; improved (at least one SLO metric 20 % better, none worse) but still breaching → the deployment is **held** and the ticket moves to `awaiting_verification`. A correct fix under external load is no longer rolled back for failing to reach the absolute SLO, and OCA never declares an incident resolved while production is still breaching: the operator clicks **Confirm resolved** or **Roll back** on the ticket page (`POST /api/tickets/{id}/confirm` / `/rollback`).
 
 Executes an approved action against the production stack. It knows how to perform each allowlisted action and nothing else. Lives in `oca/executor.py`; runs as a background task so the approve click returns immediately.
 
@@ -542,11 +548,13 @@ A ticket moves through these states. Each transition appends a `status_change` e
 ```
  detected ─▶ investigating ─▶ fix_proposed ─▶ sandbox_validated ─▶ reviewed ─▶ gate ─▶ awaiting_approval ─▶ approved ─▶ deploying ─▶ resolved
      │             │                │                 │                │          │            │                              │
+     │             │                │                 │                │          │            │                              ├ improved, still breaching ─▶ awaiting_verification ─▶ human confirms ─▶ resolved / rolls back ─▶ rolled_back
      │             │                │                 │                │          │            └ human denies ─▶ denied       └ health worse ─▶ rolled_back
      │             │                │                 │                │          └ policy fails ─▶ denied (human may override)
      │             │                │                 │                └ Guardian NEEDS_TESTING ─▶ Engineer again (with notes)
      │             │                │                 │                └ Guardian REJECT ─▶ back to investigating (max N attempts)
-     │             │                │                 └ not reproduced / fix failed ─▶ back to investigating
+     │             │                │                 ├ not reproduced ─▶ failed (hand-off: production state + diagnosis)
+     │             │                │                 └ fix failed ─▶ back to investigating
      │             │                └ Engineer                                              attempts exhausted ─▶ failed
      │             └ Investigator
      └ health script / Jira / Slack / manual
@@ -566,6 +574,7 @@ A ticket moves through these states. Each transition appends a `status_change` e
 | 8 | `approved`            | Gate / human       | Backup taken.                                                                             |
 | 9 | `deploying`           | Run executor       | Staged rollout against production with monitoring.                                        |
 | 10| `resolved`            | Executor verify    | Primary check passes N times; MTTR computed; sandbox torn down.                           |
+| 10b| `awaiting_verification` | Executor → human | Deployed and improved but still breaching an SLO; held until the operator confirms or rolls back. |
 
 A human can intervene at any point from the dashboard (approve or override a denied action, deny an approved one, restore a backup, re-run the agents). Every transition also emits an outbound message to any linked external ticket (§4.9).
 
@@ -687,6 +696,7 @@ All JSON endpoints are under `/api` on port 8001. The browser uses the HTML rout
 | GET    | `/api/tickets/{id}/report`           | clients             | Incident report as Markdown (written on close, rendered live) |
 | POST   | `/api/tickets/{id}/approve`          | human               | Approve the pending action (or override a denial)        |
 | POST   | `/api/tickets/{id}/deny`             | human               | Deny the pending action                                  |
+| POST   | `/api/tickets/{id}/confirm`, `/rollback` | human           | Resolve or roll back a deployment held for verification |
 | GET    | `/api/tickets/{id}/action`           | clients             | The pending/latest action with its policy checks         |
 | POST   | `/api/tickets/{id}/run`              | human               | (Re)launch the agent pipeline                            |
 | POST   | `/api/actions`                       | orchestrator        | Submit an `ActionRequest` → command check gate           |

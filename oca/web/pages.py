@@ -222,6 +222,26 @@ async def deny(request: Request, ticket_id: str, note: str = Form(""), user: Pri
     return render(request, "fragments/gate_status.html", **await _gate_context(request, ticket_id))
 
 
+@router.post("/tickets/{ticket_id}/confirm")
+async def confirm(request: Request, ticket_id: str, note: str = Form(""), user: Principal = Depends(_user)):
+    try:
+        await actions_api.confirm(ticket_id, request, actions_api.DecisionIn(note=note or None), request.app.state.db, user)
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
+    return render(request, "fragments/gate_status.html", **await _gate_context(request, ticket_id))
+
+
+@router.post("/tickets/{ticket_id}/rollback")
+async def rollback_held(request: Request, ticket_id: str, note: str = Form(""), user: Principal = Depends(_user)):
+    try:
+        await actions_api.rollback_held(ticket_id, request, actions_api.DecisionIn(note=note or None), request.app.state.db, user)
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
+    return render(request, "fragments/gate_status.html", **await _gate_context(request, ticket_id))
+
+
 @router.post("/tickets/{ticket_id}/run")
 async def rerun(request: Request, ticket_id: str, user: Principal = Depends(_user)):
     if await request.app.state.db.get_ticket(ticket_id) is None:

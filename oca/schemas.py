@@ -33,6 +33,7 @@ class TicketStatus(str, Enum):
     awaiting_approval = "awaiting_approval"
     approved = "approved"
     deploying = "deploying"
+    awaiting_verification = "awaiting_verification"  # deployed and improved, but SLOs still breached: a human confirms
     resolved = "resolved"
     denied = "denied"
     rolled_back = "rolled_back"
@@ -319,6 +320,11 @@ class SandboxMetrics(BaseModel):
     p99_ms: float = 0.0
     statuses: dict[str, int] = Field(default_factory=dict)
     by_endpoint: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # Read from the sandbox's own Prometheus after the run, so the sandbox judges by the same
+    # SLO set as the production detector (a saturated pool with 0% errors is still an incident).
+    db_pool_utilization_pct: float | None = None
+    db_errors_per_s: float | None = None
+    rate: int | None = None  # target requests/s the generator was asked for
 
 
 class TestRunResult(BaseModel):
@@ -346,6 +352,7 @@ class SandboxRun(BaseModel):
     created_at: datetime
     updated_at: datetime
     notes: str = ""
+    production: dict[str, Any] | None = None  # not stored: prepare() attaches the live production snapshot
 
 
 class RiskFlags(BaseModel):

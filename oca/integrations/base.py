@@ -187,8 +187,12 @@ class TicketingIntegration(ABC):
             if status is TicketStatus.rolled_back:
                 return Update("needs_human", f"Deployment rolled back; {ticket.service} is back on the previous version. {link}",
                               status)
+            if status is TicketStatus.awaiting_verification:
+                return Update("needs_human", f"Fix deployed; production improved but still breaches an SLO (external load?). "
+                                             f"Confirm or roll back on the OCA dashboard: {link}", status)
             if status is TicketStatus.failed:
-                return Update("needs_human", f"OCA could not produce a validated fix; a human is needed. {link}", status)
+                reason = f" {one_liner(payload.get('note'), 240)}" if detail is OutboundDetail.summary and payload.get("note") else ""
+                return Update("needs_human", f"OCA could not produce a validated fix; a human is needed.{reason} {link}", status)
             return Update("status", None, status)
         return None
 

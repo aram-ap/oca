@@ -30,15 +30,16 @@ ROLES = ("investigator", "engineer", "guardian")
 OUTPUT_SCHEMAS = {"investigator": DIAGNOSIS_SCHEMA, "engineer": PATCH_SCHEMA, "guardian": REVIEW_SCHEMA}
 REVIEW_EVIDENCE_TOOLS = ("get_diff", "get_test_results", "get_sandbox_results")
 # Tickets in these states are owned by the gate, a human, or the executor; agents must not run again.
-NO_REPLAY_STATUSES = frozenset({"awaiting_approval", "approved", "deploying", "resolved", "rolled_back"})
+NO_REPLAY_STATUSES = frozenset({"awaiting_approval", "approved", "deploying", "awaiting_verification", "resolved", "rolled_back"})
 
 
 class StageFailure(Exception):
     """A stage produced no usable result; the current attempt is spent."""
 
-    def __init__(self, message: str, feedback: str | None = None):
+    def __init__(self, message: str, feedback: str | None = None, terminal: bool = False):
         super().__init__(message)
         self.feedback = feedback  # what the next attempt's agents should know about this failure
+        self.terminal = terminal  # another attempt cannot help (e.g. the incident is not in the application)
 
 
 def failure_feedback(role: str, exc: AgentError) -> str:
@@ -199,6 +200,24 @@ class Orchestrator:
             raise StageFailure("Guardian evidence audit failed: " + "; ".join(problems))
 
     @staticmethod
+    def not_reproduced_reason(run: dict[str, Any]) -> str:
+        """Why a failed reproduction ends the run, phrased for the human who takes over (no agent prose)."""
+        before = run.get("before") or {}
+        measured = (f"sandbox load test at the production sha: error rate {before.get('error_rate_pct')}%, "
+                    f"p95 {before.get('p95_ms')} ms"
+                    + (f", DB pool {before.get('db_pool_utilization_pct')}%" if before.get("db_pool_utilization_pct") is not None else ""))
+        production = run.get("production") or {}
+        if production.get("healthy") is False:
+            return (f"incident not reproduced in the sandbox while production still breaches "
+                    f"{', '.join(production.get('breaches') or []) or 'its SLOs'} ({measured}). The cause is probably outside "
+                    f"the application code: external load, data volume, host resources or state not in git. "
+                    f"A human must take over; the Investigator's diagnosis is on the ticket.")
+        if production.get("healthy") is True:
+            return (f"incident not reproduced in the sandbox and production has recovered on its own ({measured}). "
+                    f"Likely transient; a human should decide whether anything needs to change.")
+        return f"incident not reproduced in the sandbox ({measured}); a human must take over."
+
+    @staticmethod
     def base_context(ticket: dict[str, Any]) -> dict[str, Any]:
         detected = next((e for e in ticket.get("events", []) if e.get("type") in ("detected", "reported")), {})
         payload = detected.get("payload", {}) if detected else {}
@@ -217,10 +236,12 @@ class Orchestrator:
     @staticmethod
     def sandbox_summary(run: dict[str, Any]) -> dict[str, Any]:
         def metrics(m: dict | None) -> dict | None:
-            return None if not m else {k: m.get(k) for k in ("requests", "failures", "error_rate_pct", "p50_ms", "p95_ms", "p99_ms", "by_endpoint")}
+            return None if not m else {k: m.get(k) for k in ("requests", "failures", "error_rate_pct", "p50_ms", "p95_ms", "p99_ms",
+                                                              "db_pool_utilization_pct", "db_errors_per_s", "rate", "by_endpoint")}
         tests = run.get("tests") or None
         return {"sandbox_run_id": run.get("id"), "base_sha": run.get("base_sha"), "patch_ref": run.get("patch_ref"),
                 "reproduced": run.get("reproduced"), "passed": run.get("passed"), "baseline": run.get("baseline"),
+                "slo": "error rate <= 5%, p95 <= 1000 ms, DB pool <= 90% (all three are measured in the sandbox)",
                 "before": metrics(run.get("before")), "after": metrics(run.get("after")),
                 "tests": None if not tests else {k: tests.get(k) for k in ("passed", "total", "failed", "output_tail")}}
 
@@ -267,9 +288,7 @@ class Orchestrator:
 
                 run = await self._call("POST", f"/api/sandbox/{ticket_id}/prepare")
                 if not run.get("reproduced"):
-                    feedback.append("The sandbox at the production sha did not reproduce the incident under load; "
-                                    "re-examine the diagnosis and the detection evidence.")
-                    raise StageFailure("incident not reproduced in sandbox")
+                    raise StageFailure(self.not_reproduced_reason(run), terminal=True)
 
                 await self._status(ticket_id, "fix_proposed")
                 fix, run = await self._engineer_cycle(ticket_id, base, diag.output, run, feedback)
@@ -311,7 +330,9 @@ class Orchestrator:
                 if exc.feedback:
                     feedback.append(exc.feedback)
                 log.warning("%s attempt %d failed: %s", ticket_id, attempt, exc)
-        summary = "attempts exhausted: " + " | ".join(failures)
+                if exc.terminal:
+                    break  # repeating the investigation cannot change this outcome; hand over now
+        summary = ("attempts exhausted: " if len(failures) >= self.max_attempts else "stopped: ") + " | ".join(failures)
         await self._event(ticket_id, "error", {"where": "orchestrator", "error": summary[:800], "attempts": failures})
         await self._status(ticket_id, "failed", note=summary)
         try:
@@ -339,7 +360,8 @@ class Orchestrator:
                 return fix, run
             after, tests = run.get("after") or {}, run.get("tests") or {}
             feedback.append(f"Sandbox validation failed on {run.get('patch_ref')}: error rate {after.get('error_rate_pct')}%, "
-                            f"p95 {after.get('p95_ms')} ms, tests passed={tests.get('passed')} ({tests.get('failed', '?')} failed). "
+                            f"p95 {after.get('p95_ms')} ms, DB pool {after.get('db_pool_utilization_pct')}%, "
+                            f"tests passed={tests.get('passed')} ({tests.get('failed', '?')} failed). "
                             + (tests.get("output_tail") or "")[-400:])
         raise StageFailure("fix not proven in sandbox after two engineer rounds")
 
