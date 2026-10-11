@@ -26,6 +26,9 @@
   {% if ticket.status.value in ("failed", "denied") %}
   <form method="post" action="/tickets/{{ ticket.id }}/run" style="margin-top:.5rem"><button class="outline secondary">Re-run agents</button></form>
   {% endif %}
+  {% if ticket.status.value in ("resolved", "failed", "rolled_back") %}
+  <p style="margin:.6rem 0 0"><a href="/tickets/{{ ticket.id }}/report" role="button" class="outline" style="width:auto">Incident report</a></p>
+  {% endif %}
   {% if mttr %}
   <h4 style="margin-top:1rem">INCIDENT RESOLVED</h4>
   <table class="mttr" style="width:auto">

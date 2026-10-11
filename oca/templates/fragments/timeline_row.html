@@ -69,6 +69,8 @@
     <strong>Rolled back</strong> {{ p.deployment_id }} → <code>{{ p.backup_ref }}</code>: {{ p.reason }}
   {% elif e.type.value == "external_sync" %}
     <strong>{{ p.target | capitalize }}</strong> {{ p.kind | replace('_', ' ') }}{% if p.key %} on {% if p.url %}<a href="{{ p.url }}" target="_blank" rel="noopener">{{ p.key }}</a>{% else %}<code>{{ p.key }}</code>{% endif %}{% endif %}{% if p.status %} → {{ p.status }}{% endif %} <span class="muted">({{ p.bytes }} bytes, metadata only)</span>
+  {% elif e.type.value == "report" %}
+    <strong>Incident report written</strong> ({{ p.status | replace("_"," ") }}) · <a href="/tickets/{{ e.ticket_id }}/report">read</a> · <a href="/tickets/{{ e.ticket_id }}/report.md">download</a>
   {% elif e.type.value == "error" %}
     <span class="badge bad">error</span> {{ p.where }}: {{ p.error }}
   {% else %}

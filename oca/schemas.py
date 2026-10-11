@@ -92,6 +92,7 @@ class EventType(str, Enum):
     status_change = "status_change"
     error = "error"
     external_sync = "external_sync"
+    report = "report"
 
 
 class GuardianDecision(str, Enum):

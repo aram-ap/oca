@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
 from oca.api import actions as actions_api
 from oca.api import deployments as deployments_api
@@ -15,6 +15,7 @@ from oca.auth import Principal
 from oca.integrations import IntegrationError, integration_status, save_integration_settings
 from oca.schemas import Actor, EventType, Role, TicketEvent, TicketStatus
 from oca.web.common import COMMON_TIMEZONES, TEMPLATES, is_fragment, render, set_timezone, web_user
+from oca.web.markdown import to_html
 from oca.web.topology import topology_context
 
 router = APIRouter(dependencies=[Depends(web_user)])
@@ -135,6 +136,26 @@ async def ticket_detail(request: Request, ticket_id: str, user: Principal = Depe
     events = await db.list_events(ticket_id)
     return render(request, "pages/ticket_detail.html", events=events, last_event_id=events[-1].id if events else 0,
                   **_changes_context(events), **ctx)
+
+
+@router.get("/tickets/{ticket_id}/report")
+async def ticket_report(request: Request, ticket_id: str, user: Principal = Depends(_user)):
+    db = request.app.state.db
+    ticket = await db.get_ticket(ticket_id)
+    if ticket is None:
+        raise HTTPException(404, "Unknown ticket")
+    text = await request.app.state.reports.render(ticket_id)
+    written = await db.latest_event(ticket_id, EventType.report)
+    return render(request, "pages/report.html", ticket=ticket, body=to_html(text), written=written)
+
+
+@router.get("/tickets/{ticket_id}/report.md")
+async def ticket_report_download(request: Request, ticket_id: str, user: Principal = Depends(_user)):
+    if await request.app.state.db.get_ticket(ticket_id) is None:
+        raise HTTPException(404, "Unknown ticket")
+    text = await request.app.state.reports.render(ticket_id)
+    return PlainTextResponse(text, media_type="text/markdown; charset=utf-8",
+                             headers={"Content-Disposition": f'attachment; filename="{ticket_id}-incident-report.md"'})
 
 
 @router.get("/tickets/{ticket_id}/changes")

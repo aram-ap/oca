@@ -84,7 +84,7 @@ def one_liner(text: Any, limit: int = ONE_LINER_CHARS) -> str:
 class Update:
     """What happened on a ticket, expressed with whitelisted fields only."""
 
-    kind: str                       # opened | picked_up | diagnosed | awaiting_approval | deploying | resolved | needs_human | status
+    kind: str                       # opened | picked_up | diagnosed | awaiting_approval | deploying | resolved | needs_human | report | status
     text: str | None                # human-readable line, or None when only the status moved
     status: TicketStatus | None     # the new ticket status, if the event was a status change
 
@@ -163,6 +163,11 @@ class TicketingIntegration(ABC):
                 return Update("diagnosed", f"Root cause (confidence {conf}): {one_liner(diagnosis['diagnosis'])} "
                                            f"Details: {link}", None)
             return Update("diagnosed", f"Root cause identified (confidence {conf}). Details on the OCA dashboard: {link}", None)
+        if event.type is EventType.report:
+            url = payload.get("url") or f"{link}/report"
+            if detail is OutboundDetail.summary and payload.get("summary"):
+                return Update("report", f"Incident report: {one_liner(payload['summary'])} Full report: {url}", None)
+            return Update("report", f"Incident report written. Read it on the OCA dashboard: {url}", None)
         if event.type is EventType.status_change:
             try:
                 status = TicketStatus(payload.get("to"))

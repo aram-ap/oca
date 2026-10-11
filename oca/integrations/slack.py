@@ -12,7 +12,8 @@ from oca.schemas import OutboundMessage, Ticket, TicketEvent
 
 SLACK_DEFAULTS: dict[str, Any] = {"enabled": False, "webhook_url": "", "outbound_detail": "minimal"}
 ICON = {"opened": ":red_circle:", "picked_up": ":mag:", "diagnosed": ":mag:", "awaiting_approval": ":large_yellow_circle:",
-        "deploying": ":rocket:", "resolved": ":large_green_circle:", "needs_human": ":warning:"}
+        "deploying": ":rocket:", "resolved": ":large_green_circle:", "needs_human": ":warning:",
+        "report": ":page_facing_up:"}
 
 
 class SlackIntegration(TicketingIntegration):

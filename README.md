@@ -23,7 +23,7 @@ Everything runs on a single ASUS Ascent GX10 (NVIDIA GB10, 128 GB unified memory
    - [Backup system](#47-backup-system)
    - [Run executor](#48-run-executor)
    - [Ticketing integrations (Jira, Slack)](#49-ticketing-integrations-jira-slack)
-   - [Frontend portal](#410-frontend-portal)
+   - [Frontend portal](#411-frontend-portal)
 5. [Incident lifecycle](#5-incident-lifecycle)
 6. [Data model](#6-data-model)
 7. [API reference](#7-api-reference)
@@ -140,7 +140,7 @@ The central service. Owns the database, exposes the REST API, serves the dashboa
 
 Responsibilities:
 
-- Serve the JSON API under `/api` on port **8001** (driftwood owns 8000/8080; see [§7](#7-api-reference)) to Slack, health scripts, agents, and external clients, and the HTML dashboard at `/` (see [§4.10](#410-frontend-portal)).
+- Serve the JSON API under `/api` on port **8001** (driftwood owns 8000/8080; see [§7](#7-api-reference)) to Slack, health scripts, agents, and external clients, and the HTML dashboard at `/` (see [§4.11](#411-frontend-portal)).
 - Run registered health checks on a timer and open tickets when they fail.
 - Drive each ticket through the [incident lifecycle](#5-incident-lifecycle) by launching `models.orchestrator` as a background task per ticket.
 - Route every proposed action to the command check gate; never execute anything directly.
@@ -437,7 +437,13 @@ Same interface, secondary priority:
 
 Stretch goal; the system is fully functional with no integrations connected.
 
-### 4.10 Frontend portal
+### 4.10 Incident reports
+
+Every ticket that ends (`resolved`, `failed`, `rolled_back`) gets a post-incident report, written by `oca/reports.py` from the ticket's own events. **No LLM composes it**: the Investigator's diagnosis and the Guardian's justification are quoted as written, and every number is a server measurement. Sections: summary, impact (baseline vs detection), timeline, root cause with evidence refs, fix (diff and production deployment), validation table, review and approval (Guardian, gate checklist, operator decision), follow-ups (open questions, Guardian concerns, errors).
+
+The Markdown file is written to `OCA_DATA_DIR/reports/<ticket>.md` and a `report` event is appended to the ticket. The dashboard renders it at `/tickets/<id>/report` (download at `/tickets/<id>/report.md`; the API serves the Markdown at `/api/tickets/<id>/report`). Open tickets show a live preview. Connected Jira issues get a comment and Slack a message carrying the report **link**; at the `summary` detail level the one-line outcome is included. The report body itself never leaves the machine (D8).
+
+### 4.11 Frontend portal
 
 A web dashboard served by the Main Process (`oca/web/`, `oca/templates/`). Pages:
 
@@ -445,7 +451,8 @@ A web dashboard served by the Main Process (`oca/web/`, `oca/templates/`). Pages
 Login
   └─ Main Dash ─────────────── LOCAL AI panel (hardware, model, 0 cloud requests, 0 bytes uploaded)
        ├─ Current Tickets      live incident list, timeline per ticket, approve/deny for gated actions,
-       │                       source badge + Jira key linking to the external issue
+       │                       source badge + Jira key linking to the external issue, incident report
+       │                       (Markdown, written when the ticket closes)
        ├─ Past Deployments     every executed action, with evidence → [Restore Backup]
        ├─ Logs Display         ticket events + service logs
        ├─ Overall Sys Health   per-service status from health checks
@@ -664,7 +671,7 @@ settings
 
 ## 7. API reference
 
-All JSON endpoints are under `/api` on port 8001. The browser uses the HTML routes in §4.10 instead; everything else (Slack, health scripts, agents, external clients) uses these.
+All JSON endpoints are under `/api` on port 8001. The browser uses the HTML routes in §4.11 instead; everything else (Slack, health scripts, agents, external clients) uses these.
 
 | Method | Path                                 | Used by             | Purpose                                                  |
 | ------ | ------------------------------------ | ------------------- | -------------------------------------------------------- |
@@ -677,6 +684,7 @@ All JSON endpoints are under `/api` on port 8001. The browser uses the HTML rout
 | POST   | `/api/tickets/{id}/status`           | orchestrator        | Pipeline state transitions only                          |
 | GET    | `/api/tickets/{id}/stream`           | clients             | SSE of events (`Last-Event-ID` resumes losslessly)       |
 | GET    | `/api/tickets/{id}/mttr`             | dashboard           | MTTR card data                                           |
+| GET    | `/api/tickets/{id}/report`           | clients             | Incident report as Markdown (written on close, rendered live) |
 | POST   | `/api/tickets/{id}/approve`          | human               | Approve the pending action (or override a denial)        |
 | POST   | `/api/tickets/{id}/deny`             | human               | Deny the pending action                                  |
 | GET    | `/api/tickets/{id}/action`           | clients             | The pending/latest action with its policy checks         |
@@ -784,7 +792,7 @@ Measured on a 2-core box: baseline 0 % / p95 ≈ 10 ms. `oca/fakeco/fake_runner.
 6. Guardian **RELEASE REVIEW**: config-only, risk ≈ 10/100, decision `APPROVE`.
 7. The command gate checklist goes green. By default (`require_human_approval` off) the executor deploys immediately; switch it on in Settings to make the ticket wait for an **Approve** click, the one human action in the demo.
 8. Backup tag taken; the executor deploys in stages; verify re-runs the health check.
-9. Health passes → **INCIDENT RESOLVED**, MTTR card. The linked Jira issue transitions to Done with the MTTR comment.
+9. Health passes → **INCIDENT RESOLVED**, MTTR card. The linked Jira issue transitions to Done with the MTTR comment, followed by a link to the incident report (§4.10).
 
 To run the demo again after a fix has shipped, reset the company first: `ops/reset.sh && ops/inject.sh timeout`. Re-running `inject.sh` alone is a no-op once its branch is merged (the redeploy only restarts the service), so there is no incident for OCA to find.
 10. **Optional closer:** disconnect the GX10 from the Internet and re-run. Everything still works.
@@ -851,7 +859,7 @@ Run everything from the repo root: `python3 -m oca.main` (server), `python3 -m m
 | Infra target   | Docker Compose (multi-arch images)       | driftwood production + sandbox                                               |
 | Metrics        | Prometheus + prometheus_client           | Standard, lightweight                                                        |
 | Logs           | Structured JSON files written by driftwood | Read directly; no Loki                                                     |
-| Dashboard      | HTMX 2 + Jinja2 + Alpine.js, Pico CSS    | Server-rendered by FastAPI; no Node, no build step, works offline (see §4.10) |
+| Dashboard      | HTMX 2 + Jinja2 + Alpine.js, Pico CSS    | Server-rendered by FastAPI; no Node, no build step, works offline (see §4.11) |
 | Auth           | Local account, signed session cookie; per-client bearer tokens | Must work offline; no external IdP                    |
 | Ticketing      | Jira REST API v2 via `httpx`; Slack Web API | Mirror only; policy-filtered outbound; outbox so it never blocks (§4.9)   |
 | Tests          | pytest + anyio (platform), unittest (agents) | 60+ tests, no Docker or GPU needed                                      |
@@ -910,7 +918,7 @@ Recorded so nobody re-litigates them by accident. Any can be overturned by the t
 | **D2** | **Guardian is advisory.** Its `APPROVE` never reaches the gate directly. `models/orchestrator.py` builds the `ActionRequest` and posts it to `/api/actions`.                                                       |
 | **D3** | **Human approval is a switch, off by default.** `settings.require_human_approval = false`: after the gate's policy checks pass the executor deploys immediately. Turn it on in Settings (or `OCA_REQUIRE_HUMAN_APPROVAL=true`) to make the ticket wait for an Approve click. |
 | **D4** | **Single process.** `oca/main.py` runs the orchestrator as an in-process background task. `models/main.py` is a standalone dev entry point only.                                                                  |
-| **D5** | **Fully local frontend.** HTMX + Jinja2 + Alpine served by FastAPI; local auth. No Vercel / Supabase / Auth0 (§4.10).                                                                                             |
+| **D5** | **Fully local frontend.** HTMX + Jinja2 + Alpine served by FastAPI; local auth. No Vercel / Supabase / Auth0 (§4.11).                                                                                             |
 | **D6** | **Sequential agent execution first.** Concurrency is an A8 benchmark, not a day-one feature (§8).                                                                                                                 |
 | **D7** | **Naming.** Top-level `models/` is the agent package; the platform package is `oca/` with contracts in `oca/schemas.py`. One root `requirements.txt`. All settings are `OCA_*` environment variables.               |
 | **D8** | **External ticketing is mirror-only and policy-filtered.** Jira/Slack never hold evidence and never receive logs, code, diffs, or metrics. Outbound text is templated from whitelisted fields; `outbound_detail` defaults to `minimal` for Jira Cloud, `summary` for self-hosted. Delivery goes through a retrying outbox so an unreachable Jira never blocks the pipeline. Approve/deny is dashboard-only; Jira comments are never instructions. |

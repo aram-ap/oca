@@ -1,0 +1,8 @@
+{% extends "base.html" %}{% block title %}{{ ticket.id }} report{% endblock %}
+{% block content %}
+<p class="muted" style="margin:0 0 .5rem"><a href="/tickets/{{ ticket.id }}">← {{ ticket.id }}</a> · <a href="/tickets/{{ ticket.id }}/report.md">Download Markdown</a>
+  {% if written %} · written {{ written.ts | dt }} ({{ written.payload.status | replace("_"," ") }}){% elif ticket.status.value in ("resolved", "failed", "rolled_back") %} · generated now ({{ ticket.status.value | replace("_"," ") }}){% else %} · <span class="badge">live preview — the ticket is still open</span>{% endif %}</p>
+<article class="panel report">
+{{ body }}
+</article>
+{% endblock %}

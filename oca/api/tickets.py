@@ -7,7 +7,7 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from oca.api.deps import get_bus, get_db
@@ -125,6 +125,15 @@ async def set_status(ticket_id: str, body: StatusIn, db: Database = Depends(get_
     if body.attempt is not None:
         await db.update_ticket(ticket_id, attempt=body.attempt)
     return await db.set_status(ticket_id, body.status, principal.actor, note=body.note)
+
+
+@router.get("/{ticket_id}/report")
+async def report(ticket_id: str, request: Request, db: Database = Depends(get_db), _: Principal = Depends(current_principal)):
+    """The incident report as Markdown, rendered from the ticket's events (also written to OCA_DATA_DIR/reports on close)."""
+    if await db.get_ticket(ticket_id) is None:
+        raise HTTPException(404, "Unknown ticket")
+    text = await request.app.state.reports.render(ticket_id)
+    return PlainTextResponse(text, media_type="text/markdown; charset=utf-8")
 
 
 @router.get("/{ticket_id}/mttr", response_model=MTTR)

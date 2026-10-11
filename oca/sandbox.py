@@ -164,7 +164,8 @@ class SandboxManager:
             raise SandboxError("The sandbox has not been prepared for this ticket (orchestrator runs prepare first)")
         return run
 
-    async def apply_patch(self, ticket_id: str, diff: str, tool: str = "apply_patch") -> dict[str, Any]:
+    async def apply_patch(self, ticket_id: str, diff: str, tool: str = "apply_patch",
+                          extra: dict[str, Any] | None = None) -> dict[str, Any]:
         run = await self._run_for(ticket_id)
         branch = self.branch_for(ticket_id)
         async with self._lock:
@@ -181,7 +182,8 @@ class SandboxManager:
         await self._event(ticket_id, Actor.engineer, EventType.finding, {
             "tool": tool, "applied": result.applied, "branch": result.branch, "commit": result.commit_sha,
             "files_changed": result.files_changed, "stat": result.stat, "error": result.error, "risk_flags": flags.model_dump(),
-            "diff": diff[:RECORDED_DIFF_CHARS], "diff_truncated": len(diff) > RECORDED_DIFF_CHARS, "commands": commands})
+            "diff": diff[:RECORDED_DIFF_CHARS], "diff_truncated": len(diff) > RECORDED_DIFF_CHARS, "commands": commands,
+            **(extra or {})})
         out = {"evidence_ref": f"sandbox:{run.id}:patch:{result.commit_sha or 'rejected'}", **result.as_dict(),
                "patch_ref": branch if result.applied else None, "risk_flags": flags.model_dump(), "sandbox_run_id": run.id,
                "diff": diff}
@@ -202,7 +204,7 @@ class SandboxManager:
             diff = diffcheck.config_diff(APP_ENV, content, key, int(value))
         except ValueError as exc:
             raise SandboxError(str(exc))
-        out = await self.apply_patch(ticket_id, diff, tool="set_config")
+        out = await self.apply_patch(ticket_id, diff, tool="set_config", extra={"key": key, "value": int(value), "path": APP_ENV})
         return {**out, "key": key, "value": int(value), "path": APP_ENV}
 
     async def create_migration(self, ticket_id: str, name: str, sql: str) -> dict[str, Any]:
@@ -223,7 +225,7 @@ class SandboxManager:
         if any(f.rsplit("/", 1)[-1].endswith(f"_{name}.sql") for f in existing):
             raise SandboxError(f"A migration named {name} already exists: {existing}")
         diff = diffcheck.new_file_diff(path, sql.strip() + "\n")
-        out = await self.apply_patch(ticket_id, diff, tool="create_migration")
+        out = await self.apply_patch(ticket_id, diff, tool="create_migration", extra={"path": path})
         return {**out, "path": path}
 
     async def run_tests(self, ticket_id: str) -> dict[str, Any]:

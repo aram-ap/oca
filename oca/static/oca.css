@@ -133,3 +133,12 @@ details.diff-block > summary, details.commands > summary { cursor: pointer; font
 .change { margin: 0 0 .6rem; }
 .change + .change { border-top: 1px solid rgba(128,128,128,.2); padding-top: .5rem; }
 .logout-button.danger { color: #b02a37; }
+
+/* incident report page */
+.report { max-width: 72rem; line-height: 1.5; }
+.report h1 { font-size: 1.4rem; margin-bottom: .4rem; }
+.report h2 { font-size: 1.05rem; margin: 1.2rem 0 .5rem; border-bottom: 1px solid rgba(128,128,128,.25); padding-bottom: .2rem; }
+.report table { width: auto; margin: .4rem 0 .8rem; }
+.report pre { font-size: .78rem; max-height: 30rem; overflow: auto; }
+.report blockquote { margin: .4rem 0; padding: .3rem .8rem; border-left: 3px solid rgba(128,128,128,.4); }
+.report ul { padding-left: 1.2rem; }
