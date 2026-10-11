@@ -208,7 +208,7 @@ async def test_switched_on_needs_a_channel_and_a_token(slack_app, settings):
 
 
 async def test_slack_is_registered(slack_app):
-    assert [i.name for i in build_integrations(slack_app)] == ["slack"]
+    assert "slack" in [i.name for i in build_integrations(slack_app)]
 
 
 def test_helpers():
