@@ -64,3 +64,29 @@ async def test_baseline_learning(app):
         await scheduler.run_check("status_check")
     after = await db.get_setting("baseline")
     assert after != before and 10 < after["p95_latency_ms"] < 20
+
+
+async def test_connection_errors_are_confirmed_before_opening_a_ticket(app, monkeypatch):
+    """One refused connection (a redeploy restarting the service) must not open a ticket; two in a row do."""
+    scheduler, runner, db = app.state.scheduler, app.state.runner, app.state.db
+
+    async def refused(service):
+        return (False, "ConnectError: All connection attempts failed") if service == "orders-api" else (True, "HTTP 200")
+
+    monkeypatch.setattr(runner, "health", refused)
+    await scheduler.tick(force=True)
+    assert await db.list_tickets() == []
+    await scheduler.tick(force=True)
+    tickets = await db.list_tickets()
+    assert len(tickets) == 1 and tickets[0].title.startswith("orders-api: ConnectError")
+    events = await db.list_events(tickets[0].id)
+    assert events[0].payload["check"] == "endpoint_check:orders-api" and events[0].payload["breaches"] == ["endpoint"]
+
+    # A single blip after recovery resets the count.
+    monkeypatch.undo()
+    await db.set_status(tickets[0].id, TicketStatus.resolved, actor="executor")
+    await db.set_setting("reopen_cooldown_s", 0)
+    await scheduler.tick(force=True)
+    monkeypatch.setattr(runner, "health", refused)
+    await scheduler.tick(force=True)
+    assert len(await db.list_tickets()) == 1
