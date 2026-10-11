@@ -1,0 +1,30 @@
+{
+  "name": "driftwood",
+  "compose_file": "docker-compose.yml",
+  "version_file": "services/orders-api/VERSION",
+  "test_path": "services/orders-api/tests",
+  "loadtest_service": "loadgen",
+  "loadtest_url": "http://frontend/api",
+  "database_service": "postgres",
+  "cache_service": "redis",
+  "api_service": "orders-api",
+  "api_target_port": 8000,
+  "prometheus_service": "prometheus",
+  "prometheus_target_port": 9090,
+  "frontend_service": "frontend",
+  "frontend_port": 18080,
+  "environment_allowlist": {
+    "orders-api": ["DB_TIMEOUT_MS", "DB_POOL_MIN", "DB_POOL_MAX", "DB_POOL_ACQUIRE_TIMEOUT_MS", "PRODUCTS_CACHE_TTL_S", "BESTSELLERS_CACHE_TTL_S"],
+    "postgres": ["SEED_ORDERS", "SEED_CUSTOMERS"]
+  },
+  "environment_overrides": {
+    "postgres": {"POSTGRES_USER": "driftwood", "POSTGRES_DB": "driftwood", "POSTGRES_PASSWORD": "{db_password}"},
+    "orders-api": {
+      "DATABASE_URL": "postgresql://driftwood:{db_password}@postgres:5432/driftwood",
+      "REDIS_URL": "redis://redis:6379/0",
+      "LOG_FILE": "/var/log/driftwood/orders-api.log"
+    }
+  },
+  "compose_variables": {"SEED_ORDERS": "2000000", "SEED_CUSTOMERS": "250000", "LOADGEN_REPLICAS": "0"},
+  "log_targets": ["/var/log/driftwood"]
+}

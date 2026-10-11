@@ -57,6 +57,7 @@ def _service_urls(value: str) -> dict[str, str]:
 class Settings:
     db_path: Path = Path("data/oca.db")
     data_dir: Path = Path("data")
+    sandbox_profile: Path | None = None
     fakeco_root: Path = Path("../driftwood")
     runner: str = "dry"
     host: str = "127.0.0.1"
@@ -130,6 +131,8 @@ class Settings:
         return cls(
             db_path=Path(get("DB_PATH", str(defaults.db_path))),
             data_dir=Path(get("DATA_DIR", str(defaults.data_dir))),
+            sandbox_profile=Path(source[PREFIX + "SANDBOX_PROFILE"]).expanduser()
+                            if source.get(PREFIX + "SANDBOX_PROFILE") else None,
             fakeco_root=Path(get("FAKECO_ROOT", str(defaults.fakeco_root))).expanduser(),
             runner=get("RUNNER", defaults.runner),
             host=get("HOST", defaults.host),

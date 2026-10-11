@@ -18,18 +18,17 @@ def runner(tmp_path):
     (tmp_path / "state" / "deployments.jsonl").write_text(json.dumps(
         {"deploy_id": 13, "ts": "t", "git_sha": "e9ab0544d9", "prev_sha": "f7e46f6a1b", "version": "1.3.0",
          "author": "ops", "subject": "reset to baseline", "files_changed": []}) + "\n")
-    r = SubprocessRunner(tmp_path, "http://prom:9090", "http://prom:19090", "http://api:18000", {})
+    r = SubprocessRunner(tmp_path, "http://prom:9090", "http://localhost:19090", "http://localhost:18000", {},
+                         data_dir=tmp_path.parent / f"{tmp_path.name}-oca")
     r.commands = []
 
-    async def fake_run(*argv, cwd=None, timeout=120, env=None, stdin=None, check=True):
+    async def fake_run(*argv, **kwargs):
         r.commands.append(list(argv))
         if argv[:2] == ("python3", "ops/status.py"):
             return 0, json.dumps({"healthy": False, "git_sha": "f7e46f6", "version": "1.4.0", "error_rate_pct": 12.0,
                                   "p95_latency_ms": 2800, "breaches": ["error_rate_pct"]}), ""
         if argv[:3] == ("git", "rev-parse", "--verify"):
             return (0, "f7e46f6a1b2c\n", "") if "f7e46f6" in argv[-1] else (1, "", "fatal")
-        if argv[:2] == ("ops/sandbox.sh", "up"):
-            return 0, 'progress...\n{"sandbox": "up", "git_sha": "f7e46f6a1b", "version": "1.4.0"}\n', ""
         return 0, "", ""
     r._run = fake_run
     return r
@@ -37,8 +36,6 @@ def runner(tmp_path):
 
 async def test_prod_sha_prefers_the_running_service_over_the_deploy_log(runner):
     assert await runner.prod_sha() == "f7e46f6"
-    info = await runner.sandbox_up("f7e46f6")
-    assert info.git_sha == "f7e46f6a1b" and ["ops/sandbox.sh", "up", "f7e46f6"] in runner.commands
 
 
 async def test_prod_sha_falls_back_to_deploy_log_when_status_is_unusable(runner):
@@ -61,7 +58,7 @@ async def test_refs_are_validated_before_reaching_git(runner):
 
 @pytest.fixture
 def git_repo(tmp_path):
-    """A tiny driftwood-shaped repo with a detached .sandbox worktree, using real git."""
+    """A tiny company repo. OCA creates its own worktree outside this checkout."""
     import subprocess
 
     root = tmp_path / "driftwood"
@@ -78,7 +75,6 @@ def git_repo(tmp_path):
     git("init", "-q", "-b", "main")
     git("add", "-A")
     git("commit", "-q", "-m", "baseline")
-    git("worktree", "add", "-q", "--detach", ".sandbox", "HEAD")
     return root
 
 
@@ -101,18 +97,21 @@ FENCED_NO_PREFIX = """```diff
 
 
 async def test_real_git_apply_tolerates_model_diffs(git_repo):
-    r = SubprocessRunner(git_repo, "http://prom:9090", "http://prom:19090", "http://api:18000", {})
+    r = SubprocessRunner(git_repo, "http://prom:9090", "http://localhost:19090", "http://localhost:18000", {},
+                         data_dir=git_repo.parent / "oca-data")
+    r.worktree.parent.mkdir(parents=True)
+    await r._run("git", "worktree", "add", "-q", "--detach", str(r.worktree), "HEAD")
     result = await r.apply_patch_in_sandbox("fix/INC-0001", WRONG_COUNTS, "revert timeout")
     assert result.applied, result.error
     assert result.files_changed == ["services/orders-api/config/app.env"] and "--recount" in result.stat
-    assert "DB_TIMEOUT_MS=3000" in (git_repo / ".sandbox" / "services/orders-api/config/app.env").read_text()
+    assert "DB_TIMEOUT_MS=3000" in (r.worktree / "services/orders-api/config/app.env").read_text()
     assert "DB_TIMEOUT_MS=100" in (git_repo / "services/orders-api/config/app.env").read_text()  # production untouched
     assert "+DB_TIMEOUT_MS=3000" in await r.sandbox_diff("fix/INC-0001")
 
     # Second patch on the same branch: fenced, no a/ b/ prefixes, single-line hunk.
     again = await r.apply_patch_in_sandbox("fix/INC-0001", FENCED_NO_PREFIX, "tune")
     assert again.applied, again.error
-    assert "DB_TIMEOUT_MS=2500" in (git_repo / ".sandbox" / "services/orders-api/config/app.env").read_text()
+    assert "DB_TIMEOUT_MS=2500" in (r.worktree / "services/orders-api/config/app.env").read_text()
 
     garbage = await r.apply_patch_in_sandbox("fix/INC-0001", "--- a/services/orders-api/config/app.env\n+++ b/services/orders-api/config/app.env\n@@ -1 +1 @@\n-NOT IN FILE\n+X\n", "bad")
     assert not garbage.applied and "does not apply" in garbage.error

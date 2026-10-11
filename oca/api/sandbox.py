@@ -48,8 +48,12 @@ async def validate(ticket_id: str, sandbox=Depends(get_sandbox), db: Database = 
 
 
 @router.post("/{ticket_id}/teardown")
-async def teardown(ticket_id: str, sandbox=Depends(get_sandbox), _: Principal = Depends(require(Role.orchestrator))):
-    await sandbox.teardown(ticket_id)
+async def teardown(ticket_id: str, sandbox=Depends(get_sandbox), db: Database = Depends(get_db),
+                   _: Principal = Depends(require(Role.orchestrator))):
+    try:
+        await sandbox.teardown(ticket_id)
+    except Exception as exc:
+        raise await _wrap(exc, db, ticket_id, "teardown")
     return {"ticket_id": ticket_id, "sandbox": "down"}
 
 

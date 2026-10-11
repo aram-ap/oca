@@ -37,7 +37,7 @@ class SandboxManager:
         self.db = app.state.db
         self.runner = app.state.runner
         self.settings = app.state.settings
-        self._lock = asyncio.Lock()  # one sandbox at a time (driftwood has a single .sandbox worktree)
+        self._lock = asyncio.Lock()  # one OCA-managed environment at a time
         self.active_ticket: str | None = None
 
     @staticmethod
@@ -81,18 +81,29 @@ class SandboxManager:
         """Bring the sandbox up at the production sha and measure BEFORE. Must reproduce."""
         ticket = await self._ensure_ticket(ticket_id)
         async with self._lock:
-            if self.active_ticket not in (None, ticket_id):
-                await self.runner.sandbox_down()
-            prod_sha = await self.runner.prod_sha()
-            info = await self.runner.sandbox_up(prod_sha)
-            self.active_ticket = ticket_id
-            run = await self.db.create_sandbox_run(ticket_id, info.git_sha or prod_sha, await self._baseline())
-            before = await self.runner.sandbox_loadtest(self.settings.loadtest_requests)
-            thresholds = await self._thresholds()
-            breaches = self._breaches(before, thresholds)
-            reproduced = bool(breaches)
-            run = await self.db.update_sandbox_run(run.id, before=before, reproduced=reproduced,
-                                                   notes=f"sandbox at {info.git_sha} ({info.version})")
+            # Each reproduction starts with fresh seeded data. A previous patch
+            # may have applied a migration which a code checkout cannot undo.
+            # Also clears a sandbox left by a previous OCA process.
+            await self.runner.sandbox_down()
+            self.active_ticket = None
+            try:
+                prod_sha = await self.runner.prod_sha()
+                self.active_ticket = ticket_id
+                info = await self.runner.sandbox_up(prod_sha)
+                run = await self.db.create_sandbox_run(ticket_id, info.git_sha or prod_sha, await self._baseline())
+                before = await self.runner.sandbox_loadtest(self.settings.loadtest_requests)
+                thresholds = await self._thresholds()
+                breaches = self._breaches(before, thresholds)
+                reproduced = bool(breaches)
+                run = await self.db.update_sandbox_run(run.id, before=before, reproduced=reproduced,
+                                                       notes=f"sandbox at {info.git_sha} ({info.version})")
+            except (Exception, asyncio.CancelledError):
+                try:
+                    await asyncio.shield(self.runner.sandbox_down())
+                    self.active_ticket = None
+                except Exception:
+                    log.exception("sandbox cleanup after failed preparation needs retry")
+                raise
         await self._event(ticket_id, Actor.orchestrator, EventType.sandbox_result, {
             "phase": "before", "sandbox_run_id": run.id, "git_sha": run.base_sha, "reproduced": reproduced,
             "breaches": breaches, "before": before.model_dump(), "baseline": run.baseline,
@@ -129,6 +140,7 @@ class SandboxManager:
                     await self.runner.sandbox_down()
                 except RunnerError as exc:
                     log.warning("sandbox down failed: %s", exc)
+                    raise
                 self.active_ticket = None
 
     # ------------------------------------------------------------ engineer tools
