@@ -17,6 +17,12 @@ async def root(request: Request):
     return RedirectResponse(target, status_code=303)
 
 
+@router.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    from fastapi.responses import Response
+    return Response(status_code=204)
+
+
 @router.get("/login")
 async def login_form(request: Request):
     return render(request, "login.html", error=None)

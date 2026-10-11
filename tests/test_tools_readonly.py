@@ -51,6 +51,8 @@ async def test_tool_shapes(app, client, auth):
     latest = (await client.get("/api/tools/git", params={"operation": "diff"}, headers=inv)).json()
     assert latest["ref"] == diff["ref"]
     assert (await client.get("/api/tools/git", params={"operation": "diff", "ref": "zzz"}, headers=inv)).status_code == 404
+    prefix = (await client.get("/api/tools/git", params={"operation": "diff", "ref": "f6e5d4c"}, headers=inv)).json()
+    assert "+DB_TIMEOUT_MS=100" in prefix["diff"]  # a short sha, as models like to quote them
 
     containers = (await client.get("/api/tools/containers", headers=inv)).json()
     assert len(containers["containers"]) == 6

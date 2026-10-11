@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -126,8 +127,8 @@ async def get_git(operation: Literal["history", "diff"], ref: str | None = Query
         if ref is None and deployments:
             target = deployments[0]
         elif ref is not None:
-            for d in deployments:
-                if ref == str(d.deploy_id) or ref == d.git_sha:
+            for d in deployments:  # deploy id, full sha, or a sha prefix either way round
+                if ref == str(d.deploy_id) or ref == d.git_sha or (len(ref) >= 6 and (d.git_sha.startswith(ref) or ref.startswith(d.git_sha))):
                     target = d
                     break
         if target is not None:
@@ -142,6 +143,11 @@ async def get_git(operation: Literal["history", "diff"], ref: str | None = Query
         elif ref and ref.startswith("fix/"):
             diff = await runner.sandbox_diff(ref)
             label = ref
+        elif ref and re.fullmatch(r"[A-Za-z0-9_./-]{4,100}", ref) and not ref.startswith("-"):
+            diff = await runner.git_diff(f"{ref}~1", ref)  # any commit or branch: diff against its parent
+            label = f"{ref}~1..{ref}"
+            if not diff:
+                raise HTTPException(404, f"No diff for ref {ref!r}; use a deploy id (see operation=history), a sha, a..b, or fix/<ticket>")
         else:
             raise HTTPException(404, f"Unknown ref {ref!r}; use a deploy id, sha, a..b, or fix/<ticket>")
     except RunnerError as exc:

@@ -329,7 +329,7 @@ class FakeRunner:
 
     async def git_diff(self, a: str, b: str) -> str:
         for name, spec in INCIDENTS.items():
-            if b == spec["sha"] or (a == BASELINE_SHA and b == spec["sha"]):
+            if spec["sha"].startswith(b.rstrip("~1").split("..")[-1][:10]) and len(b) >= 6:
                 return spec["diff"]
         if b in self.branches:
             return "\n".join(self.branches[b]["diffs"])
