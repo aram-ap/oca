@@ -17,6 +17,7 @@ from oca.auth import Principal, current_principal, require
 from oca.config import Settings
 from oca.db import Database
 from oca.integrations import apply_settings, mask_secrets, merge_secrets
+from oca.model import current_model, set_model
 from oca.tz import set_timezone
 from oca.schemas import LocalAIStats, Role, TicketEvent
 
@@ -32,6 +33,7 @@ SETTING_KEYS: dict[str, Any] = {
     "cooldown_s": int,
     "reopen_cooldown_s": int,
     "timezone": str,
+    "model": str,
     "jira": dict,
     "slack": dict,
 }
@@ -62,24 +64,25 @@ async def shutdown(request: Request, _: Principal = Depends(require(Role.admin))
 
 
 @router.get("/health")
-async def health(settings: Settings = Depends(get_settings), db: Database = Depends(get_db)):
+async def health(request: Request, settings: Settings = Depends(get_settings), db: Database = Depends(get_db)):
     await db.get_setting("require_human_approval")  # proves the DB answers
-    return {"status": "ok", "service": "oca", "runner": settings.runner, "model": settings.model}
+    return {"status": "ok", "service": "oca", "runner": settings.runner, "model": current_model(request.app)}
 
 
-async def ollama_loaded(settings: Settings) -> bool | None:
+async def ollama_loaded(settings: Settings, model: str | None = None) -> bool | None:
+    model = model or settings.model
     try:
         async with httpx.AsyncClient(timeout=1.0, trust_env=False) as client:
             response = await client.get(settings.ollama_url + "/api/ps")
             response.raise_for_status()
-            return any(m.get("name") == settings.model or m.get("model") == settings.model
+            return any(m.get("name") == model or m.get("model") == model
                        for m in response.json().get("models", []))
     except (httpx.HTTPError, ValueError):
         return None
 
 
 @router.get("/stats/local-ai", response_model=LocalAIStats)
-async def local_ai(settings: Settings = Depends(get_settings), db: Database = Depends(get_db),
+async def local_ai(request: Request, settings: Settings = Depends(get_settings), db: Database = Depends(get_db),
                    _: Principal = Depends(current_principal)):
     bytes_sent = await db.total_bytes_sent()
     jira = await db.get_setting("jira", {}) or {}
@@ -90,20 +93,20 @@ async def local_ai(settings: Settings = Depends(get_settings), db: Database = De
         mode = f"{' + '.join(connected)} {hosted} · {bytes_sent} bytes external"
     else:
         mode = "not connected · 0 bytes external"
-    return LocalAIStats(hardware=settings.hardware, model=settings.model, ticketing_mode=mode,
+    return LocalAIStats(hardware=settings.hardware, model=current_model(request.app), ticketing_mode=mode,
                         ticketing_bytes_sent=bytes_sent, ollama_url=settings.ollama_url,
-                        loaded=await ollama_loaded(settings))
+                        loaded=await ollama_loaded(settings, current_model(request.app)))
 
 
 @router.get("/settings")
-async def get_settings_view(db: Database = Depends(get_db), settings: Settings = Depends(get_settings),
+async def get_settings_view(request: Request, db: Database = Depends(get_db), settings: Settings = Depends(get_settings),
                             _: Principal = Depends(current_principal)):
     stored = await db.all_settings()
     for name in ("jira", "slack"):
         if isinstance(stored.get(name), dict):
             stored[name] = mask_secrets(name, stored[name])
     stored["runner"] = settings.runner
-    stored["model"] = settings.model
+    stored["model"] = current_model(request.app)
     stored["fakeco_root"] = str(settings.fakeco_root)
     stored["allowlist_path"] = str(settings.allowlist_path)
     return stored
@@ -131,12 +134,17 @@ async def put_settings(changes: dict[str, Any], request: Request, db: Database =
                 set_timezone(request.app, value)
             except ValueError as exc:
                 raise HTTPException(422, str(exc))
+        if key == "model":
+            try:
+                value = set_model(request.app, value)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc))
         if key in ("jira", "slack"):
             value = merge_secrets(key, value, await db.get_setting(key, {}) or {})
         await db.set_setting(key, value)
     if any(k in changes for k in ("jira", "slack")) and hasattr(request.app.state, "integrations"):
         await apply_settings(request.app)
-    return await get_settings_view(db, request.app.state.settings)
+    return await get_settings_view(request, db, request.app.state.settings)
 
 
 @router.get("/logs", response_model=list[TicketEvent])

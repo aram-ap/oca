@@ -99,3 +99,38 @@ async def test_shutdown_button_stops_the_server(app, client, auth):
     assert page.status_code == 200 and "shutting down" in page.text
     assert (await client.post("/api/shutdown", headers=auth(Role.admin))).json()["status"] == "shutting_down"
     await asyncio.wait_for(stopped.wait(), 3)
+
+
+async def test_model_switch_run_all_and_pagers(app, client, auth):
+    cookie = auth(Role.admin)
+    # Model: dropdown on Settings, switch takes effect for the next pipeline launch and is persisted.
+    page = await client.get("/settings", headers=cookie)
+    assert 'action="/settings/model"' in page.text and "<select name=\"model\"" in page.text
+    switched = await client.post("/settings/model", data={"model": "llama3.2:3b"}, headers=cookie)
+    assert switched.status_code == 303 and switched.headers["location"] == "/settings?saved=model"
+    assert (await client.get("/api/health")).json()["model"] == "llama3.2:3b"
+    assert (await app.state.db.get_setting("model")) == "llama3.2:3b"
+    assert (await client.get("/api/settings", headers=cookie)).json()["model"] == "llama3.2:3b"
+    bad = await client.put("/api/settings", json={"model": "no spaces allowed"}, headers=cookie)
+    assert bad.status_code == 422
+    assert (await client.put("/api/settings", json={"model": "gpt-oss:latest"}, headers=cookie)).json()["model"] == "gpt-oss:latest"
+    assert "gpt-oss:latest" in (await client.get("/dash/local-ai", headers=cookie)).text
+
+    # Health: one button runs every enabled check.
+    health = await client.get("/health", headers=cookie)
+    assert 'hx-post="/health/run-all"' in health.text
+    before = {c["name"]: c["last_run"] for c in (await client.get("/api/checks", headers=cookie)).json()}
+    ran = await client.post("/health/run-all", headers=cookie)
+    assert ran.status_code == 200 and 'id="check-table"' in ran.text
+    after = {c["name"]: c["last_run"] for c in (await client.get("/api/checks", headers=cookie)).json()}
+    assert after["status_check"] is not None and after["status_check"] != before["status_check"]
+
+    # Pagers on the event log and the ticket timeline.
+    logs = await client.get("/logs", headers=cookie)
+    assert 'data-pager="tbody > tr"' in logs.text and "data-pager-controls" in logs.text
+    app.state.runner.inject("timeout")
+    await app.state.scheduler.tick(force=True)
+    ticket = (await app.state.db.list_tickets())[0]
+    detail = await client.get(f"/tickets/{ticket.id}", headers=cookie)
+    assert 'data-pager="ul.timeline > li"' in detail.text and 'data-pager-start="last"' in detail.text
+    assert (await client.get("/static/pager.js")).status_code == 200

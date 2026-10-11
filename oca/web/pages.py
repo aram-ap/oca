@@ -13,6 +13,7 @@ from oca.api.system import ollama_loaded, request_shutdown
 from oca.api.tickets import SSE_HEADERS, event_stream
 from oca.auth import Principal
 from oca.integrations import IntegrationError, integration_status, save_integration_settings
+from oca.model import current_model, list_models, set_model
 from oca.schemas import Actor, EventType, Role, TicketEvent, TicketStatus
 from oca.web.common import COMMON_TIMEZONES, TEMPLATES, is_fragment, render, set_timezone, web_user
 from oca.web.markdown import to_html
@@ -76,9 +77,10 @@ def _runner_state(request: Request) -> dict[str, Any] | None:
 
 async def _local_ai(request: Request) -> dict[str, Any]:
     db, settings = request.app.state.db, request.app.state.settings
-    return {"hardware": settings.hardware, "model": settings.model, "bytes_sent": await db.total_bytes_sent(),
+    model = current_model(request.app)
+    return {"hardware": settings.hardware, "model": model, "bytes_sent": await db.total_bytes_sent(),
             "jira": await db.get_setting("jira", {}) or {}, "slack": await db.get_setting("slack", {}) or {},
-            "loaded": await ollama_loaded(settings)}
+            "loaded": await ollama_loaded(settings, model)}
 
 
 @router.get("/dash/local-ai")
@@ -278,6 +280,14 @@ async def health(request: Request, user: Principal = Depends(_user)):
     return render(request, template, checks=checks)
 
 
+@router.post("/health/run-all")
+async def run_all_checks(request: Request, user: Principal = Depends(_user)):
+    scheduler = request.app.state.scheduler
+    if scheduler is not None:
+        await scheduler.tick(force=True)
+    return render(request, "fragments/check_table.html", checks=await request.app.state.db.list_checks())
+
+
 @router.post("/health/{name}/run")
 async def run_check(request: Request, name: str, user: Principal = Depends(_user)):
     scheduler = request.app.state.scheduler
@@ -302,7 +312,7 @@ async def toggle_check(request: Request, name: str, user: Principal = Depends(_u
 
 @router.get("/logs")
 async def logs(request: Request, user: Principal = Depends(_user)):
-    events = await request.app.state.db.recent_events(limit=300)
+    events = await request.app.state.db.recent_events(limit=1000)
     return render(request, "pages/logs.html", events=list(reversed(events)))
 
 
@@ -323,9 +333,23 @@ async def settings_page(request: Request, saved: str | None = None, user: Princi
 
 async def _settings_context(request: Request) -> dict[str, Any]:
     db = request.app.state.db
+    model = current_model(request.app)
+    models = await list_models(request.app.state.settings.ollama_url)
     return {"stored": await db.all_settings(), "integrations": await integration_status(request.app),
-            "timezones": COMMON_TIMEZONES,
+            "timezones": COMMON_TIMEZONES, "model": model, "models": sorted(set(models) | {model}),
+            "ollama_reachable": bool(models),
             "allowlist": request.app.state.settings.allowlist_path.read_text(encoding="utf-8")}
+
+
+@router.post("/settings/model")
+async def settings_model(request: Request, model: str = Form(""), user: Principal = Depends(_user)):
+    """Switch the Ollama model the agents use; takes effect on the next pipeline launch."""
+    try:
+        name = set_model(request.app, model)
+    except ValueError:
+        return RedirectResponse("/settings?saved=model-invalid", status_code=303)
+    await request.app.state.db.set_setting("model", name)
+    return RedirectResponse("/settings?saved=model", status_code=303)
 
 
 @router.post("/settings/integrations/jira")

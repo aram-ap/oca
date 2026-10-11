@@ -15,6 +15,7 @@ from oca.backup import BackupManager
 from oca.checks.scheduler import start_scheduler
 from oca.executor import Executor
 from oca.gate import load_allowlist
+from oca.model import set_model
 from oca.reports import start_reports
 from oca.integrations import start_integrations, start_outbox
 from oca.integrations.jira import JIRA_DEFAULTS
@@ -48,10 +49,14 @@ async def startup(app: FastAPI) -> None:
     settings: Settings = app.state.settings
     await app.state.db.connect()
     seeds = dict(DEFAULT_SETTINGS, require_human_approval=settings.require_human_approval,
-                 risk_threshold=settings.risk_threshold, timezone=settings.timezone)
+                 risk_threshold=settings.risk_threshold, timezone=settings.timezone, model=settings.model)
     for key, value in seeds.items():
         await app.state.db.seed_setting(key, value)
     set_timezone(app, await app.state.db.get_setting("timezone", settings.timezone))
+    try:
+        set_model(app, await app.state.db.get_setting("model", settings.model))
+    except ValueError:
+        set_model(app, settings.model)
     app.state.background = []
     for starter in app.state.service_starters:
         task = await starter(app)

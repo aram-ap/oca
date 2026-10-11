@@ -17,10 +17,16 @@
   <div>
     <div class="panel">
       <h4>Runtime</h4>
-      <table class="compact">
+      <table class="compact runtime">
         <tr><td>Runner</td><td><code>{{ settings.runner }}</code></td></tr>
         <tr><td>Fakeco root</td><td><code>{{ settings.fakeco_root }}</code></td></tr>
-        <tr><td>Model</td><td><code>{{ settings.model }}</code> @ {{ settings.ollama_url }}</td></tr>
+        <tr><td>Model</td><td>
+          <form method="post" action="/settings/model" class="inline-form">
+            <select name="model" aria-label="Model">{% for m in models %}<option value="{{ m }}" {% if m == model %}selected{% endif %}>{{ m }}</option>{% endfor %}</select>
+            <button type="submit" class="outline" style="width:auto">Use model</button>
+          </form>
+          <small class="muted">Ollama at {{ settings.ollama_url }}{% if not ollama_reachable %} (unreachable: showing the current model only){% endif %}. Applies to the next pipeline run.</small>
+        </td></tr>
         <tr><td>Baseline (learned)</td><td><code>{{ stored.baseline | tojson }}</code></td></tr>
         <tr><td>Thresholds</td><td><code>{{ stored.thresholds | tojson }}</code></td></tr>
       </table>

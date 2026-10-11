@@ -460,12 +460,13 @@ Login
        │                       source badge + Jira key linking to the external issue, incident report
        │                       (Markdown, written when the ticket closes)
        ├─ Past Deployments     every executed action, with evidence → [Restore Backup]
-       ├─ Logs Display         ticket events + service logs
+       ├─ Logs Display         ticket event log (paged: rows per page + pages; the ticket timeline pages the same way)
        ├─ Overall Sys Health   per-service status from health checks
-       │    └─ Health Check Scripts   registered checks, last result, enable/disable
+       │    └─ Health Check Scripts   registered checks, last result, enable/disable, Run now / Run all
        ├─ Integrations         Jira / Slack connection status, outbox queue, bytes sent, last sync
        └─ Settings             policy (require_human_approval, risk threshold, cooldown, blocklist), dashboard
-                               time zone, Integrations (Jira / Slack forms with Test connection), Shut down server
+                               time zone, model dropdown (any model installed in Ollama; applies to the next run),
+                               Integrations (Jira / Slack forms with Test connection), Shut down server
 ```
 
 The ticket page shows the live timeline plus an **Engineer's changes** panel: every applied patch with its coloured diff, and the complete log of shell commands the sandbox tools ran. Timeline rows for `set_config`, `create_migration` and `apply_patch` expand to the diff; `run_tests` rows show the pytest command and output tail. The **Shut down** button (sidebar and Settings) stops the OCA process gracefully after a confirm; production and the sandbox containers are left untouched.
@@ -710,7 +711,7 @@ All JSON endpoints are under `/api` on port 8001. The browser uses the HTML rout
 | POST   | `/api/checks/{name}/run`             | human, health       | Run a check now                                          |
 | PUT    | `/api/checks/{name}`                 | human               | Enable/disable, change interval                          |
 | GET    | `/api/logs`                          | clients             | Ticket events across tickets                             |
-| GET/PUT | `/api/settings`                     | human (PUT)         | Approval mode, risk threshold, baseline, thresholds, blocklist, cooldown, time zone, Jira/Slack config (secrets masked on GET) |
+| GET/PUT | `/api/settings`                     | human (PUT)         | Approval mode, risk threshold, baseline, thresholds, blocklist, cooldown, time zone, model, Jira/Slack config (secrets masked on GET) |
 | POST   | `/api/shutdown`                      | human               | Stop the OCA process (SIGTERM after 0.5 s; lifespan shutdown runs) |
 | GET    | `/api/stats/local-ai`                | dashboard           | Cloud requests (0), bytes uploaded (0), ticketing bytes sent, model, hardware |
 | POST   | `/api/dev/inject`, `/api/dev/reset`, GET `/api/dev/state` | human | Dry mode only: drive the fake company          |

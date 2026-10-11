@@ -1,5 +1,9 @@
 <div id="check-table" hx-get="/health" hx-trigger="every 10s" hx-swap="outerHTML">
-<table class="compact">
+<div class="toolbar">
+  <form hx-post="/health/run-all" hx-target="#check-table" hx-swap="outerHTML"><button class="outline" style="width:auto;padding:.3rem .9rem">Run all checks</button></form>
+  <span class="muted">Runs every enabled check now and refreshes the table.</span>
+</div>
+<div class="table-scroll"><table class="compact">
   <thead><tr><th>Check</th><th>Service</th><th>Interval</th><th>Opens tickets</th><th>Last run</th><th>Result</th><th></th></tr></thead>
   <tbody>
   {% for c in checks %}
@@ -15,5 +19,5 @@
   </tr>
   {% endfor %}
   </tbody>
-</table>
+</table></div>
 </div>

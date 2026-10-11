@@ -45,7 +45,9 @@ class Pipeline:
         from models.tools.client import PlatformClient, ToolAPIClient
 
         s = self.app.state.settings
-        llm = OllamaClient(ModelConfig(model=s.model, ollama_url=s.ollama_url, timeout_s=s.llm_timeout_s,
+        from oca.model import current_model
+
+        llm = OllamaClient(ModelConfig(model=current_model(self.app), ollama_url=s.ollama_url, timeout_s=s.llm_timeout_s,
                                        keep_alive=s.model_keep_alive))
         platform = PlatformClient(token=s.tokens[Role.orchestrator], base_url=s.api_url)
         orchestrator = Orchestrator(platform, max_attempts=s.max_attempts)

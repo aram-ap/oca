@@ -8,9 +8,12 @@
   <div style="grid-column: span 2">
     <div class="panel" hx-ext="sse" sse-connect="/tickets/{{ ticket.id }}/stream?after={{ last_event_id }}">
       <h4>Timeline <span class="muted" style="font-size:.8rem">live</span></h4>
+      <div data-pager="ul.timeline > li" data-pager-key="timeline" data-pager-start="last">
+      <div data-pager-controls class="pager"></div>
       <ul class="timeline" id="timeline" sse-swap="event" hx-swap="beforeend">
         {% include "fragments/timeline.html" %}
       </ul>
+      </div>
       <div sse-swap="status" hx-swap="none" hx-target="#gate-panel"></div>
     </div>
   </div>
