@@ -165,6 +165,35 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
             await agent.run({"ticket_id": "INC-1"})
         self.assertEqual(len(api.requests), 1)
 
+    async def test_client_4xx_becomes_an_observation_but_5xx_aborts(self):
+        from models.tools.client import ToolAPIError
+
+        class RejectingAPI(FakeAPI):
+            async def request(self, method, path, arguments):
+                self.requests.append((method, path, arguments))
+                raise ToolAPIError("HTTP 404", 404, '{"detail":"No such file: app/nope.py"}')
+        api = RejectingAPI("investigator")
+        model = ScriptedModel(call("get_code", path="app/nope.py"), call("get_logs", service="orders-api"), final(DIAGNOSIS))
+        api2 = FakeAPI("investigator")
+        calls = {"n": 0}
+
+        async def mixed(method, path, arguments):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ToolAPIError("HTTP 404", 404, "No such file")
+            return {"evidence_ref": "logs:1"}
+        api2.request = mixed
+        result = await Investigator(llm=model, api_client=api2).run({"ticket_id": "INC-1"})
+        self.assertEqual([o.ok for o in result.observations], [False, True])
+        self.assertIn("HTTP 404", model.histories[1][-1]["content"])
+
+        class ServerErrorAPI(FakeAPI):
+            async def request(self, method, path, arguments):
+                raise ToolAPIError("HTTP 500", 500, "")
+        with self.assertRaises(ToolAPIError):
+            await Investigator(llm=ScriptedModel(call("get_logs", service="orders-api")),
+                               api_client=ServerErrorAPI("investigator")).run({"ticket_id": "INC-1"})
+
     async def test_role_catalogs_and_dispatch_both_enforce_permissions(self):
         expected = {
             "investigator": {"get_logs", "get_containers", "get_metrics", "get_code", "get_git"},
