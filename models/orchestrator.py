@@ -200,6 +200,21 @@ class Orchestrator:
             raise StageFailure("Guardian evidence audit failed: " + "; ".join(problems))
 
     @staticmethod
+    def single_config_change(run: dict[str, Any]) -> tuple[str, int] | None:
+        """set_config only when the validated branch changes exactly one allowlisted key and nothing else.
+
+        The Engineer's reported diff is just its last write; the branch may also carry a migration or
+        code, and those only ship with deploy_patch.
+        """
+        changes = run["changes"]
+        if not changes.get("config_only") or changes.get("migrations"):
+            return None
+        pairs = [(k, v) for k, v in (changes.get("config_changes") or {}).items()]
+        if len(pairs) != 1 or pairs[0][0] not in CONFIG_KEYS or not re.fullmatch(r"-?\d+", str(pairs[0][1])):
+            return None
+        return pairs[0][0], int(pairs[0][1])
+
+    @staticmethod
     def not_reproduced_reason(run: dict[str, Any]) -> str:
         """Why a failed reproduction ends the run, phrased for the human who takes over (no agent prose)."""
         before = run.get("before") or {}
@@ -377,7 +392,8 @@ class Orchestrator:
 
     @staticmethod
     def action_request(ticket_id: str, service: str, fix: dict, run: dict, review: dict, diagnosis: dict) -> dict[str, Any]:
-        change = config_change(fix.get("diff", ""))
+        change = Orchestrator.single_config_change(run) if isinstance(run.get("changes"), dict) and "files" in run["changes"] \
+            else config_change(fix.get("diff", ""))
         if change is not None:
             action, args = "set_config", {"service": service, "key": change[0], "value": change[1]}
         else:

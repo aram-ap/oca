@@ -80,3 +80,17 @@ def test_blocklist_and_cooldown():
     rollback = ActionRequest(action=ActionName.rollback, args={"deployment_id": "DEP-0001"}, ticket_id="INC-0001")
     decision = evaluate(rollback, ctx(last_deployment=recent, sandbox_run=None, review=None))
     assert decision.status is ActionStatus.awaiting_approval  # rollback needs no sandbox/review and ignores cooldown
+
+
+def test_config_values_are_checked_against_the_key_specific_range():
+    def set_config(key, value):
+        return ActionRequest(action=ActionName.set_config, args={"service": "orders-api", "key": key, "value": value}, ticket_id="INC-0001")
+
+    assert evaluate(set_config("DB_POOL_MAX", 20), ctx()).checks[2].ok is True   # a pool size, not a timeout
+    assert evaluate(set_config("DB_TIMEOUT_MS", 3000), ctx()).checks[2].ok is True
+    denied = evaluate(set_config("DB_POOL_MAX", 1), ctx())
+    assert denied.checks[2].ok is False and "below the minimum 2" in denied.checks[2].detail
+    denied = evaluate(set_config("DB_TIMEOUT_MS", 50), ctx())
+    assert denied.checks[2].ok is False and "below the minimum 100" in denied.checks[2].detail
+    denied = evaluate(set_config("DB_POOL_MAX", 500), ctx())
+    assert denied.checks[2].ok is False and "above the maximum 100" in denied.checks[2].detail

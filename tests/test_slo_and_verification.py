@@ -99,3 +99,30 @@ async def test_regression_is_still_rolled_back_automatically(app, client, auth):
     assert final["status"] == "rolled_back"
     restore = [e for e in final["events"] if e["type"] == "run" and e["payload"]["stage"] == "auto_restore"][0]
     assert "worse than before the change" in restore["payload"]["reason"]
+
+
+MIGRATION = {"name": "add_orders_customer_email_idx", "sql": "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orders_customer_email ON orders (customer_email);"}
+
+
+async def test_each_prepare_starts_from_a_clean_fix_branch_and_validate_reports_branch_changes(app, client, auth):
+    runner, orch, eng = app.state.runner, auth(Role.orchestrator), auth(Role.engineer)
+    ticket = await detect(app)
+    assert (await client.post(f"/api/sandbox/{ticket.id}/prepare", headers=orch)).status_code == 200
+    stale = (await client.post("/api/tools/sandbox/config", json={"ticket_id": ticket.id, "key": "DB_POOL_MAX", "value": 300}, headers=eng)).json()
+    assert stale["applied"] and f"fix/{ticket.id}" in runner.branches and runner.branches[f"fix/{ticket.id}"]["config"]["DB_POOL_MAX"] == 300
+
+    # A new attempt drops the previous branch: its patches must not leak into the next fix.
+    assert (await client.post(f"/api/sandbox/{ticket.id}/prepare", headers=orch)).status_code == 200
+    assert f"fix/{ticket.id}" not in runner.branches and f"git branch -D fix/{ticket.id}" in runner.calls
+    migration = (await client.post("/api/tools/sandbox/migration", json={"ticket_id": ticket.id, **MIGRATION}, headers=eng)).json()
+    assert migration["applied"] and migration["path"].endswith("002_add_orders_customer_email_idx.sql")
+    config = (await client.post("/api/tools/sandbox/config", json={"ticket_id": ticket.id, "key": "DB_TIMEOUT_MS", "value": 3000}, headers=eng)).json()
+    assert config["applied"] and runner.branches[f"fix/{ticket.id}"]["config"]["DB_POOL_MAX"] == 10  # baseline, not the stale 300
+    assert (await client.post("/api/tools/sandbox/loadtest", json={"ticket_id": ticket.id}, headers=eng)).json()["phase"] == "after"
+    validated = (await client.post(f"/api/sandbox/{ticket.id}/validate", headers=orch)).json()
+    assert validated["passed"] is True
+    changes = validated["changes"]
+    assert changes["config_only"] is False and changes["migrations"] == ["services/orders-api/migrations/002_add_orders_customer_email_idx.sql"]
+    assert changes["config_changes"] == {"DB_TIMEOUT_MS": "3000"} and len(changes["files"]) == 2
+    event = [e for e in await app.state.db.list_events(ticket.id) if e.type is EventType.sandbox_result][-1]
+    assert event.payload["changes"] == changes

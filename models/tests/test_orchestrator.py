@@ -292,3 +292,29 @@ class NotReproducedTests(unittest.IsolatedAsyncioTestCase):
         result = await orchestrator(platform, Canned(DIAG), Canned(PATCH), guard(APPROVE), attempts=2).run_ticket("INC-0001")
         self.assertEqual(result.status, "failed")
         self.assertIn("recovered on its own", result.reason)
+
+
+class ActionSelectionTests(unittest.TestCase):
+    def test_branch_with_a_migration_ships_as_deploy_patch_even_if_the_last_write_was_config(self):
+        run = {"id": "SBX-1", "patch_ref": "fix/INC-0001", "tests": {"passed": True},
+               "changes": {"files": ["services/orders-api/config/app.env", "services/orders-api/migrations/002_idx.sql"],
+                           "config_changes": {"DB_POOL_MAX": "20"}, "migrations": ["services/orders-api/migrations/002_idx.sql"],
+                           "config_only": False}}
+        fix = {"diff": "--- a/services/orders-api/config/app.env\n+++ b/services/orders-api/config/app.env\n@@ -1 +1 @@\n-DB_POOL_MAX=300\n+DB_POOL_MAX=20\n"}
+        request = Orchestrator.action_request("INC-0001", "orders-api", fix, run, {"risk_score": 45, "decision": "APPROVE"}, {"confidence": 0.9})
+        self.assertEqual(request["action"], "deploy_patch")
+        self.assertEqual(request["args"]["branch"], "fix/INC-0001")
+
+    def test_single_config_line_on_the_branch_ships_as_set_config(self):
+        run = {"id": "SBX-1", "patch_ref": "fix/INC-0001", "tests": {"passed": True},
+               "changes": {"files": ["services/orders-api/config/app.env"], "config_changes": {"DB_TIMEOUT_MS": "3000"},
+                           "migrations": [], "config_only": True}}
+        request = Orchestrator.action_request("INC-0001", "orders-api", {"diff": "none"}, run, {}, {})
+        self.assertEqual(request["action"], "set_config")
+        self.assertEqual(request["args"], {"service": "orders-api", "key": "DB_TIMEOUT_MS", "value": 3000})
+        run["changes"]["config_changes"] = {"DB_TIMEOUT_MS": "3000", "DB_POOL_MAX": "20"}
+        self.assertEqual(Orchestrator.action_request("INC-0001", "orders-api", {"diff": "none"}, run, {}, {})["action"], "deploy_patch")
+
+    def test_without_branch_info_the_engineer_diff_still_decides(self):
+        request = Orchestrator.action_request("INC-0001", "orders-api", {"diff": REVERT}, {"id": "SBX-1"}, {}, {})
+        self.assertEqual(request["action"], "set_config")

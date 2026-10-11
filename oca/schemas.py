@@ -353,6 +353,7 @@ class SandboxRun(BaseModel):
     updated_at: datetime
     notes: str = ""
     production: dict[str, Any] | None = None  # not stored: prepare() attaches the live production snapshot
+    changes: dict[str, Any] | None = None     # not stored: validate() attaches what the fix branch changes (files, config, migrations)
 
 
 class RiskFlags(BaseModel):

@@ -486,6 +486,10 @@ class FakeRunner:
                        f"git -C .sandbox commit -q -m {message!r}"]
         return PatchResult(applied=True, branch=branch, commit_sha=b["sha"], files_changed=list(info.files), stat=stat)
 
+    async def sandbox_reset_branch(self, branch: str) -> bool:
+        self.calls.append(f"git branch -D {branch}")
+        return self.branches.pop(branch, None) is not None
+
     async def sandbox_diff(self, branch: str) -> str:
         if branch not in self.branches:
             raise RunnerError(f"unknown branch {branch!r}")

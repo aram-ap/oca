@@ -432,6 +432,17 @@ class SubprocessRunner:
         return PatchResult(applied=True, branch=branch, commit_sha=sha.strip(), files_changed=files.split(),
                            stat=(stat.strip() + f"\n(applied with {applied_with})"))
 
+    async def sandbox_reset_branch(self, branch: str) -> bool:
+        """Delete the fix branch so a new attempt starts from the production sha, not from stale patches."""
+        self._check_ref(branch)
+        if not branch.startswith("fix/"):
+            raise RunnerError("Only fix/<ticket> branches can be reset")
+        async with self._mutate:
+            rc, _, err = await self._run("git", "branch", "-D", branch, check=False, timeout=30)
+        if rc != 0 and "not found" not in err:
+            log.warning("could not reset %s: %s", branch, err.strip()[-200:])
+        return rc == 0
+
     async def sandbox_diff(self, branch: str) -> str:
         self._check_ref(branch)
         _, base, _ = await self._run("git", "merge-base", "main", branch, timeout=15)

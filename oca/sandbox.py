@@ -119,6 +119,9 @@ class SandboxManager:
             # Also clears a sandbox left by a previous OCA process.
             await self.runner.sandbox_down()
             self.active_ticket = None
+            reset = getattr(self.runner, "sandbox_reset_branch", None)
+            if reset is not None and await reset(self.branch_for(ticket_id)):
+                log.info("%s: dropped the previous attempt's %s", ticket_id, self.branch_for(ticket_id))
             try:
                 prod_sha = await self.runner.prod_sha()
                 self.active_ticket = ticket_id
@@ -163,11 +166,23 @@ class SandboxManager:
             improved = run.before is None or after.error_rate_pct <= max(run.before.error_rate_pct / 4, thresholds["error_rate_pct"])
             passed = tests.passed and not breaches and improved  # `not breaches` covers pool and latency too
             run = await self.db.update_sandbox_run(run.id, after=after, tests=tests, passed=passed)
+            changes = await self._branch_changes(run.patch_ref)
         await self._event(ticket_id, Actor.orchestrator, EventType.sandbox_result, {
             "phase": "after", "sandbox_run_id": run.id, "patch_ref": run.patch_ref, "passed": passed,
             "breaches": breaches, "tests": tests.model_dump(), "before": run.before.model_dump() if run.before else None,
-            "after": after.model_dump(), "baseline": run.baseline, "load": {"requests": n, "rate": rate}})
-        return run
+            "after": after.model_dump(), "baseline": run.baseline, "load": {"requests": n, "rate": rate}, "changes": changes})
+        return run.model_copy(update={"changes": changes})
+
+    async def _branch_changes(self, branch: str) -> dict[str, Any]:
+        """What the whole fix branch changes relative to production, so the orchestrator deploys the
+        branch (deploy_patch) unless the fix really is one config line (set_config)."""
+        try:
+            info = diffcheck.parse(await self.runner.sandbox_diff(branch))
+        except Exception as exc:  # noqa: BLE001 - informational; the orchestrator falls back to the Engineer's diff
+            return {"error": str(exc)[:200]}
+        config_only = bool(info.files) and all(f.endswith(".env") for f in info.files)
+        return {"files": list(info.files), "config_changes": dict(info.config_changes),
+                "migrations": sorted(info.migration_sql), "config_only": config_only}
 
     async def teardown(self, ticket_id: str) -> None:
         async with self._lock:

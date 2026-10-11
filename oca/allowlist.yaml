@@ -16,7 +16,9 @@ actions:
     args:
       service: { enum: [orders-api] }
       key:     { enum: [DB_TIMEOUT_MS, DB_POOL_MAX, DB_POOL_ACQUIRE_TIMEOUT_MS] }
-      value:   { type: int, min: 100, max: 30000 }
+      value:   { type: int, min: 100, max: 30000, by: key,
+                 ranges: { DB_TIMEOUT_MS: { min: 100, max: 30000 }, DB_POOL_ACQUIRE_TIMEOUT_MS: { min: 100, max: 30000 },
+                           DB_POOL_MAX: { min: 2, max: 100 } } }
     requires: [backup, sandbox_reproduced, sandbox_fixed, guardian_approve, risk_below]
   restart_service:
     description: docker compose restart of one production service

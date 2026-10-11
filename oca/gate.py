@@ -26,6 +26,13 @@ class ArgSpec(BaseModel):
     min: int | None = None
     max: int | None = None
     pattern: str | None = None
+    by: str | None = None                                   # another arg whose value selects a range below
+    ranges: dict[str, "ArgRange"] = Field(default_factory=dict)
+
+
+class ArgRange(BaseModel):
+    min: int | None = None
+    max: int | None = None
 
 
 class ActionSpec(BaseModel):
@@ -55,6 +62,15 @@ class GateContext:
     cooldown_s: int = 120
     blocklist: list[str] = field(default_factory=list)
     now: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+def _resolved(spec: ArgSpec, args: dict[str, Any]) -> ArgSpec:
+    """A config value's range depends on the key: pool sizes and timeouts live on different scales."""
+    if spec.by and spec.ranges:
+        selected = spec.ranges.get(str(args.get(spec.by)))
+        if selected is not None:
+            return spec.model_copy(update={"min": selected.min, "max": selected.max})
+    return spec
 
 
 def _check_value(name: str, value: Any, spec: ArgSpec) -> str | None:
@@ -100,7 +116,7 @@ def evaluate(request: ActionRequest, ctx: GateContext) -> GateDecision:
         record(2, None, "skipped")
 
     if spec is not None and checks[-1].ok:
-        problems = [p for name, s in spec.args.items() if (p := _check_value(name, request.args[name], s))]
+        problems = [p for name, s in spec.args.items() if (p := _check_value(name, request.args[name], _resolved(s, request.args)))]
         record(3, not problems, "; ".join(problems) if problems else "all values within allowed ranges")
     else:
         record(3, None, "skipped")
