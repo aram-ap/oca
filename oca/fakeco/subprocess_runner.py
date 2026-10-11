@@ -92,6 +92,12 @@ class SubprocessRunner:
                               list(argv), proc.returncode, detail)
         return proc.returncode, stdout, stderr
 
+    def _short_path(self, text: str) -> str:
+        """Display form: the sandbox checkout as ``<sandbox>`` and the company clone as ``.``."""
+        wt, root = str(self.worktree), str(self.root)
+        return (text.replace(wt + "/", "<sandbox>/").replace(wt, "<sandbox>")
+                    .replace(root + "/", "").replace(root, "."))
+
     def command_mark(self) -> int:
         return self._seq
 
@@ -101,12 +107,12 @@ class SubprocessRunner:
         for call in self.calls:
             if call.get("seq", 0) <= mark:
                 continue
-            argv = [a.replace(str(self.root) + "/", "").replace(str(self.root), ".") for a in call["argv"]]
+            argv = [self._short_path(a) for a in call["argv"]]
             cmd = shlex.join(argv)
             if call.get("stdin"):
                 cmd += "  < (stdin)"
             if call.get("cwd") and call["cwd"] != str(self.root):
-                cmd = f"(cd {call['cwd'].replace(str(self.root), '.')} && {cmd})"
+                cmd = f"(cd {self._short_path(call['cwd'])} && {cmd})"
             out.append({"cmd": cmd[:400], "rc": call["rc"]})
         return out
 
