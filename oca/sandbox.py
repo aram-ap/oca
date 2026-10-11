@@ -149,9 +149,11 @@ class SandboxManager:
         await self._event(ticket_id, Actor.engineer, EventType.finding, {
             "tool": "apply_patch", "applied": result.applied, "branch": result.branch, "commit": result.commit_sha,
             "files_changed": result.files_changed, "error": result.error, "risk_flags": flags.model_dump()})
-        return {"evidence_ref": f"sandbox:{run.id}:patch:{result.commit_sha or 'rejected'}", **result.as_dict(),
-                "patch_ref": branch if result.applied else None, "risk_flags": flags.model_dump(),
-                "sandbox_run_id": run.id}
+        out = {"evidence_ref": f"sandbox:{run.id}:patch:{result.commit_sha or 'rejected'}", **result.as_dict(),
+               "patch_ref": branch if result.applied else None, "risk_flags": flags.model_dump(), "sandbox_run_id": run.id}
+        if not result.applied:
+            out["hint"] = diffcheck.FORMAT_HINT
+        return out
 
     async def run_tests(self, ticket_id: str) -> dict[str, Any]:
         run = await self._run_for(ticket_id)

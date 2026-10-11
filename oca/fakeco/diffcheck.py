@@ -25,6 +25,28 @@ class DiffInfo:
     migration_sql: dict[str, str] = field(default_factory=dict)   # path -> added SQL
 
 
+FORMAT_HINT = ("Unified diff format: '--- a/<path>' and '+++ b/<path>' headers (or '--- /dev/null' for a new file), "
+               "then one or more '@@ -start,count +start,count @@' hunks whose context lines (prefixed by a space) match "
+               "the current file exactly; counts are recomputed server-side, so keep hunks small. Read the file with "
+               "get_code first and copy the context lines verbatim. No markdown fences.")
+
+
+def normalize(diff: str) -> str:
+    """Strip markdown fences and stray prose around a diff; make sure it ends with a newline."""
+    text = diff.replace("\r\n", "\n").strip("\n")
+    lines = text.split("\n")
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    # drop leading prose before the first diff header
+    for i, line in enumerate(lines):
+        if line.startswith(("diff --git", "--- ", "+++ ", "Index: ")):
+            lines = lines[i:]
+            break
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
 def parse(diff: str) -> DiffInfo:
     info = DiffInfo()
     current: str | None = None

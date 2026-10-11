@@ -416,6 +416,7 @@ class FakeRunner:
     async def apply_patch_in_sandbox(self, branch: str, diff: str, message: str) -> PatchResult:
         self._require_sandbox()
         self.calls.append(f"apply_patch {branch}")
+        diff = diffcheck.normalize(diff)
         try:
             info = diffcheck.validate(diff)
         except ValueError as exc:

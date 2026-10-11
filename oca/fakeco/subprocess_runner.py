@@ -272,6 +272,7 @@ class SubprocessRunner:
             raise RunnerError("Patch branches must be named fix/<ticket>")
         if not self.worktree.is_dir():
             raise RunnerError("Sandbox worktree is missing; run sandbox_up first")
+        diff = diffcheck.normalize(diff)
         try:
             diffcheck.validate(diff)
         except ValueError as exc:
@@ -284,17 +285,44 @@ class SubprocessRunner:
                 await self._run("git", "-C", str(wt), "checkout", "-q", branch, timeout=60)
             else:
                 await self._run("git", "-C", str(wt), "checkout", "-q", "-B", branch, timeout=60)
-            rc, _, err = await self._run("git", "-C", str(wt), "apply", "--check", "--whitespace=nowarn", "-",
-                                         stdin=diff, check=False, timeout=60)
-            if rc != 0:
-                return PatchResult(applied=False, branch=branch, error=f"git apply --check failed: {err.strip()[-800:]}")
-            await self._run("git", "-C", str(wt), "apply", "--whitespace=nowarn", "-", stdin=diff, timeout=60)
+            applied_with, errors = None, []
+            # Models get hunk arithmetic and path prefixes wrong far more often than the change itself:
+            # escalate tolerance, trying the prefix level the headers suggest first.
+            levels = ("-p1", "-p0") if re.search(r"^(---|\+\+\+) [ab]/", diff, re.M) else ("-p0", "-p1")
+            variants = ([], ["--recount"], ["--recount", "--ignore-whitespace"],
+                        ["--recount", "--ignore-whitespace", "--unidiff-zero"])
+            for level in levels:
+                for flags in variants:
+                    argv = ["git", "-C", str(wt), "apply", level, "--whitespace=nowarn", *flags]
+                    rc, _, err = await self._run(*argv, "--check", "-", stdin=diff, check=False, timeout=60)
+                    if rc == 0:
+                        await self._run(*argv, "-", stdin=diff, timeout=60)
+                        applied_with = f"git apply {level} {' '.join(flags)}".strip()
+                        break
+                    errors.append(f"git apply {level} {' '.join(flags)}: {err.strip().splitlines()[-1][:120] if err.strip() else 'failed'}")
+                if applied_with:
+                    break
+            if applied_with is None:
+                # Last resort: GNU patch tolerates offsets and fuzzy context; a dry run must succeed first.
+                for level in levels:
+                    rc, _, err = await self._run("patch", level, "--dry-run", "-f", "--fuzz=3", "--forward", "-d", str(wt),
+                                                 stdin=diff, check=False, timeout=60)
+                    if rc == 0:
+                        await self._run("patch", level, "-f", "--fuzz=3", "--forward", "--no-backup-if-mismatch", "-d", str(wt),
+                                        stdin=diff, timeout=60)
+                        applied_with = f"patch {level} --fuzz=3"
+                        break
+                    errors.append(f"patch {level} --fuzz=3: {err.strip().splitlines()[-1][:120] if err.strip() else 'failed'}")
+            if applied_with is None:
+                unique = list(dict.fromkeys(errors))
+                return PatchResult(applied=False, branch=branch, error="patch does not apply: " + " | ".join(unique[-4:]))
             await self._run("git", "-C", str(wt), "add", "-A", "services", timeout=30)
             await self._run("git", "-C", str(wt), *ENGINEER_IDENTITY, "commit", "-q", "-m", message, timeout=30)
             _, sha, _ = await self._run("git", "-C", str(wt), "rev-parse", "--short=10", "HEAD", timeout=15)
             _, files, _ = await self._run("git", "-C", str(wt), "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD", timeout=15)
             _, stat, _ = await self._run("git", "-C", str(wt), "show", "--stat", "--format=", "HEAD", timeout=15)
-        return PatchResult(applied=True, branch=branch, commit_sha=sha.strip(), files_changed=files.split(), stat=stat.strip())
+        return PatchResult(applied=True, branch=branch, commit_sha=sha.strip(), files_changed=files.split(),
+                           stat=(stat.strip() + f"\n(applied with {applied_with})"))
 
     async def sandbox_diff(self, branch: str) -> str:
         self._check_ref(branch)
