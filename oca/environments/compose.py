@@ -54,9 +54,14 @@ class ComposeSandbox:
         identity = hashlib.sha256(f"{self.root}|{data_dir.resolve()}".encode()).hexdigest()[:12]
         self.project = f"oca-sandbox-{profile.name}-{identity}"
         self.runtime = data_dir.resolve() / "sandboxes" / identity
-        self.worktree = self.runtime / "checkout"
         self.model_path = self.runtime / "compose.json"
         self.marker = self.runtime / "owner.json"
+        self.env_file = self.runtime / "compose.env"
+        # The runtime directory persists across sandboxes; the checkout and log directories that
+        # containers bind-mount get a fresh name every cycle. Docker Desktop (macOS) keeps a stale
+        # view of a deleted-and-recreated bind path and refuses it with "bind source path does not
+        # exist", so a mounted path is never reused once it has been removed.
+        self.cycle = self._recorded_cycle() or secrets.token_hex(4)
         self.api_url = api_url
         self.ports = {profile.api_service: (profile.api_target_port, loopback_port(api_url)),
                       profile.prometheus_service: (profile.prometheus_target_port, loopback_port(prom_url)),
@@ -66,11 +71,27 @@ class ComposeSandbox:
         self._run = run
         self._check_location()
 
+    @property
+    def worktree(self) -> Path:
+        return self.runtime / f"checkout-{self.cycle}"
+
+    @property
+    def logs(self) -> Path:
+        return self.runtime / f"logs-{self.cycle}"
+
+    def _recorded_cycle(self) -> str | None:
+        """The cycle a previous OCA process left behind, so its checkout can still be torn down."""
+        try:
+            owner = json.loads(self.marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        cycle = owner.get("cycle") if isinstance(owner, dict) else None
+        return cycle if isinstance(cycle, str) and re.fullmatch(r"[0-9a-f]{8}", cycle) else None
+
     def _check_location(self) -> None:
         if self.runtime == self.root or self.runtime.is_relative_to(self.root) or self.root.is_relative_to(self.runtime):
             raise RunnerError("Sandbox runtime must be outside the company checkout")
-        for path in (self.runtime, self.worktree, self.marker, self.model_path,
-                     self.runtime / "logs", self.runtime / "compose.env"):
+        for path in (self.runtime, self.worktree, self.marker, self.model_path, self.logs, self.env_file):
             if path.resolve() != path or path.is_symlink():
                 raise RunnerError("Sandbox runtime paths must not be symlinks or junctions")
 
@@ -111,7 +132,7 @@ class ComposeSandbox:
 
     def _compose_argv(self, path: Path) -> list[str]:
         return ["docker", "compose", "-p", self.project, "--project-directory", str(self.worktree),
-                "--env-file", str(self.runtime / "compose.env"), "-f", str(path)]
+                "--env-file", str(self.env_file), "-f", str(path)]
 
     async def compose(self, *args: str, **kwargs):
         self._owned()
@@ -187,7 +208,7 @@ class ComposeSandbox:
                         raise RunnerError("Unsupported sandbox volume")
                 elif kind == "bind":
                     if mount["target"] in self.profile.log_targets:
-                        mount["source"] = str(self.runtime / "logs")
+                        mount["source"] = str(self.logs)
                         mount["read_only"] = False
                     else:
                         mount["source"] = str(self._checkout_path(mount["source"]))
@@ -213,17 +234,20 @@ class ComposeSandbox:
         if not re.fullmatch(r"[A-Za-z0-9_./-]{1,100}", ref) or ref.startswith("-"):
             raise RunnerError("Invalid sandbox git ref")
         self._check_location()
-        if self.runtime.exists():
-            owner = self._owned()
+        owner = self._owned() if self.marker.exists() else {}
+        if self.worktree.exists() and owner.get("cycle") == self.cycle:
+            pass  # rebuild of the current sandbox (patch branch, database reset): same checkout and credential
         else:
-            self.runtime.mkdir(parents=True, mode=0o700)
-            owner = {"root": str(self.root), "project": self.project, "password": secrets.token_hex(24)}
+            # A new sandbox: fresh checkout/log directory names and a fresh database credential.
+            self.runtime.mkdir(parents=True, mode=0o700, exist_ok=True)
+            self.cycle = secrets.token_hex(4)
+            owner = {"root": str(self.root), "project": self.project, "password": secrets.token_hex(24),
+                     "cycle": self.cycle}
             self._write(self.marker, owner)
-        (self.runtime / "logs").mkdir(exist_ok=True)
-        env_file = self.runtime / "compose.env"
-        if env_file.is_symlink():
+        self.logs.mkdir(exist_ok=True)
+        if self.env_file.is_symlink():
             raise RunnerError("Compose environment file must not be a symlink")
-        env_file.write_text("# OCA deliberately does not load the company .env\n", encoding="utf-8")
+        self.env_file.write_text("# OCA deliberately does not load the company .env\n", encoding="utf-8")
         try:
             _, sha, _ = await self._run("git", "rev-parse", "--verify", f"{ref}^{{commit}}", timeout=30)
             sha = sha.strip()
@@ -291,4 +315,10 @@ class ComposeSandbox:
         if self.worktree.exists():
             await self._run("git", "worktree", "remove", "--force", str(self.worktree), timeout=60)
         self._check_location()
-        shutil.rmtree(self.runtime)
+        # The runtime directory and ownership record stay; only this cycle's files go. The next
+        # ``up`` picks new checkout/log names, so Docker never sees a removed bind path again.
+        for path in (self.worktree, self.logs):
+            if path.exists():
+                shutil.rmtree(path)
+        for path in (self.model_path, self.env_file):
+            path.unlink(missing_ok=True)

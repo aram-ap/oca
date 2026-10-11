@@ -179,10 +179,10 @@ class CheckResult(BaseModel):
 | Check                   | What it does                                                                                  | Opens a ticket when                     |
 | ----------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------- |
 | `status_check`          | Runs driftwood's own detector, `ops/status.py --json` (SLO: 5 % 5xx, 1 s p95, 90 % pool)       | `healthy == false` — **primary detector** |
-| `endpoint_check:*`      | HTTP GET on `orders-api /health` and `frontend /api/health`                                   | non-2xx or timeout (orders-api only)    |
+| `endpoint_check:*`      | HTTP GET on `orders-api /health` and `frontend /api/health`                                   | non-2xx or timeout on **two consecutive runs** (orders-api only; one refused connection during a redeploy is ignored) |
 | `metrics_check`         | Recorded Prometheus series vs the learned baseline × factor and the SLO                      | evidence only                           |
 | `log_error_parse`       | Tails `logs/orders-api.log`, share of 5xx in a 60 s window                                    | evidence only                           |
-| `jira_ticket_reader`    | Polls Jira with a JQL filter (see §4.9)                                                       | registered, disabled until M5           |
+| `jira_ticket_reader`    | Polls Jira with a JQL filter (see §4.9)                                                       | enabled while Jira is connected in Settings |
 | `slack_ticket_reader`   | Polls a Slack channel for incident reports                                                    | registered, disabled (stretch)          |
 
 The scheduler (`oca/checks/scheduler.py`) runs due checks every tick, stores every result in `health_checks`, and opens **one ticket per failing service**: further failures append a rate-limited `check_failed` event instead of a new ticket, and a service that fails again within `reopen_cooldown_s` of being resolved does not reopen. While healthy, the baseline (`settings.baseline`) is learned with an exponential moving average. Thresholds live in `settings.thresholds`.
@@ -194,7 +194,7 @@ The AI implementation is contained in `models/` and comprises **three separate t
 | Agent            | Source + prompt                                  | Responsibilities                                                                                          | Tool access                                                         | Forbidden                                            |
 | ---------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------- |
 | **Investigator** | `agents/investigator.py` + `prompts/investigator.txt` | Examine logs, Prometheus metrics, container state, git history, and relevant code; report suspected root cause with evidence | Read-only: `docker_tools`, `prometheus_tools`, `filesystem_tools`, `git_tools` | Editing files, commands with side effects, deployment |
-| **Engineer**     | `agents/engineer.py` + `prompts/engineer.txt`    | Create candidate patches, apply them to the sandbox copy, run load test and tests, iterate               | Read access to code; **sandbox-scoped** `sandbox_tools`             | Editing production, deployments, unrestricted shell  |
+| **Engineer**     | `agents/engineer.py` + `prompts/engineer.txt`    | Fix the incident in the sandbox copy, run load test and tests, iterate                                   | `get_code`, `list_files`, `get_git`; **sandbox-scoped** write tools `set_config`, `create_migration`, `apply_patch`; `run_tests`, `run_loadtest` | Editing production, deployments, unrestricted shell  |
 | **Guardian**     | `agents/guardian.py` + `prompts/guardian.txt`    | Inspect proposed diff, test evidence, operational/security risk, and policy constraints; recommend a decision | Read-only: `review_tools` (diff, test results, risk evaluation)      | Modifying patches, calling the gate, deploying       |
 
 **Tool architecture (decision D1):** `models/tools/catalog.py` declares every tool once — name, description, JSON schema, allowed roles, and the `/api/tools/...` endpoint it maps to — and `models/tools/client.py` is the stdlib HTTP transport. Permissions are enforced twice:
@@ -206,7 +206,7 @@ The AI implementation is contained in `models/` and comprises **three separate t
 
 - `models/config.py` — `ModelConfig` from `OCA_MODEL`, `OCA_OLLAMA_URL`, `OCA_LLM_TIMEOUT_S`, `OCA_MODEL_KEEP_ALIVE` (loopback URLs only).
 - `models/core/llm.py` — non-streaming client for Ollama's local `/api/chat` with native tool calls; no proxies, no redirects, no retries.
-- `models/core/agent.py` — bounded decide → tool → observe loop with step/time/observation budgets, cross-ticket guard, JSON final answer validated against the role's schema (a repair turn uses Ollama structured output), and an `on_observation` hook that streams tool use onto the ticket timeline.
+- `models/core/agent.py` — bounded decide → tool → observe loop with step/time/observation budgets, cross-ticket guard, JSON final answer validated against the role's schema (a repair turn uses Ollama structured output), and an `on_observation` hook that streams tool use onto the ticket timeline. Loop guards for small local models: an identical tool call is refused until a write succeeds, every tool result carries `steps_remaining`, a budget nudge fires near the end, and the Engineer cannot finish without a successful write (unless it reports `reproduced: false`). A failed attempt hands the next one a briefing of what was tried and why it failed.
 - `models/core/tool_registry.py` — JSON-schema-subset validation, per-role allowlists, dispatch.
 - `models/core/state.py` — the three output contracts (`DIAGNOSIS_SCHEMA`, `PATCH_SCHEMA`, `REVIEW_SCHEMA`) mirrored 1:1 by `oca/schemas.py` (`tests/test_contracts.py` enforces it).
 - `models/orchestrator.py` — Investigator → Engineer → Guardian handoffs with feedback, retries (`OCA_MAX_ATTEMPTS`), `NEEDS_TESTING` loops, and submission of the final `ActionRequest` to `POST /api/actions` (decision D2). Talks to the platform only over HTTP with the orchestrator token.
@@ -220,7 +220,7 @@ A **shared model does not mean shared permissions**: each agent has its own prom
 
 - **Investigator:** structured diagnosis, evidence references, confidence, unresolved questions.
 - **Engineer:** proposed patch/diff, sandbox reproduction evidence, test commands, before/after results.
-- **Guardian:** risk score (0–100), policy concerns, decision (`APPROVE`, `REJECT`, `NEEDS_TESTING`), justification. `APPROVE` is **advisory**; the orchestrator turns it into an `ActionRequest`, and only the gate (and, by default, a human) can approve execution.
+- **Guardian:** risk score (0–100), policy concerns, decision (`APPROVE`, `REJECT`, `NEEDS_TESTING`), justification. `APPROVE` is **advisory**; the orchestrator turns it into an `ActionRequest`, and only the gate (and, when `require_human_approval` is on, a human) can approve execution.
 
 Example Investigator output:
 
@@ -251,8 +251,8 @@ An isolated copy of the relevant application services where the Engineer works a
 
 Mechanism:
 
-1. `prepare` (orchestrator): OCA tears down any previous sandbox (including its volumes), then creates a detached git worktree at the running production SHA under `OCA_DATA_DIR/sandboxes/<identity>/checkout`. It resolves the company's Compose file with an explicit OCA environment, validates it, and writes a standalone sandbox configuration. OCA starts a project named `oca-sandbox-driftwood-<identity>` with fresh synthetic seed data and runs the company's load generator to record **BEFORE**. The incident must reproduce (SLO breach), or the ticket goes back to the Investigator.
-2. Engineer `apply_patch(ticket_id, diff)`: the server validates the unified diff (`services/orders-api/**` or `services/frontend/**`, never `Dockerfile`/`requirements.txt`, ≤ 20 files, ≤ 2000 lines), creates or reuses branch `fix/<ticket>` in the worktree, checks, applies and commits the patch, and rebuilds the sandbox. Patches are cumulative. The production checkout is not edited by sandbox operations.
+1. `prepare` (orchestrator): OCA tears down any previous sandbox (including its volumes), then creates a detached git worktree at the running production SHA under `OCA_DATA_DIR/sandboxes/<identity>/checkout-<cycle>` (a new name per sandbox: Docker Desktop on macOS refuses a bind-mount path that was deleted and recreated). It resolves the company's Compose file with an explicit OCA environment, validates it, and writes a standalone sandbox configuration. OCA starts a project named `oca-sandbox-driftwood-<identity>` with fresh synthetic seed data and runs the company's load generator to record **BEFORE**. The incident must reproduce (SLO breach), or the ticket goes back to the Investigator.
+2. Engineer write tools. `set_config(ticket_id, key, value)` and `create_migration(ticket_id, name, sql)` take structured arguments and the **server writes the diff** (one `KEY=value` line in `app.env`; the next numbered `migrations/NNN_<name>.sql`), which removes the hunk-arithmetic failures small models make. `apply_patch(ticket_id, diff)` remains for code changes: the server validates the unified diff (`services/orders-api/**` or `services/frontend/**`, never `Dockerfile`/`requirements.txt`, ≤ 20 files, ≤ 2000 lines). All three create or reuse branch `fix/<ticket>` in the worktree, check, apply and commit the patch, and rebuild the sandbox. Patches are cumulative. The production checkout is not edited by sandbox operations. Every write tool records the diff, the commit and the shell commands it ran on its `finding` event; `run_tests` and `run_loadtest` record their commands and output too, so the ticket page shows exactly what the Engineer did.
 3. Engineer `run_loadtest` / `run_tests` iterate; `validate` (orchestrator) is authoritative: rebuild on `fix/<ticket>`, record **AFTER**, and run the **patched checkout's** tests in an OCA test container against the sandbox API. Compare with the baseline and SLO. Measurements and test output are attached as `sandbox_result` events and a `sandbox_runs` row.
 
 ```
@@ -451,8 +451,11 @@ Login
        ├─ Overall Sys Health   per-service status from health checks
        │    └─ Health Check Scripts   registered checks, last result, enable/disable
        ├─ Integrations         Jira / Slack connection status, outbox queue, bytes sent, last sync
-       └─ Settings             thresholds, baselines, allowlist, require_human_approval, Jira + Slack config
+       └─ Settings             policy (require_human_approval, risk threshold, cooldown, blocklist), dashboard
+                               time zone, Integrations (Jira / Slack forms with Test connection), Shut down server
 ```
+
+The ticket page shows the live timeline plus an **Engineer's changes** panel: every applied patch with its coloured diff, and the complete log of shell commands the sandbox tools ran. Timeline rows for `set_config`, `create_migration` and `apply_patch` expand to the diff; `run_tests` rows show the pytest command and output tail. The **Shut down** button (sidebar and Settings) stops the OCA process gracefully after a confirm; production and the sandbox containers are left untouched.
 
 The MTTR card shown on a resolved ticket:
 
@@ -689,10 +692,11 @@ All JSON endpoints are under `/api` on port 8001. The browser uses the HTML rout
 | POST   | `/api/checks/{name}/run`             | human, health       | Run a check now                                          |
 | PUT    | `/api/checks/{name}`                 | human               | Enable/disable, change interval                          |
 | GET    | `/api/logs`                          | clients             | Ticket events across tickets                             |
-| GET/PUT | `/api/settings`                     | human (PUT)         | Approval mode, risk threshold, baseline, thresholds, blocklist, cooldown, Jira/Slack config |
+| GET/PUT | `/api/settings`                     | human (PUT)         | Approval mode, risk threshold, baseline, thresholds, blocklist, cooldown, time zone, Jira/Slack config (secrets masked on GET) |
+| POST   | `/api/shutdown`                      | human               | Stop the OCA process (SIGTERM after 0.5 s; lifespan shutdown runs) |
 | GET    | `/api/stats/local-ai`                | dashboard           | Cloud requests (0), bytes uploaded (0), ticketing bytes sent, model, hardware |
 | POST   | `/api/dev/inject`, `/api/dev/reset`, GET `/api/dev/state` | human | Dry mode only: drive the fake company          |
-| GET    | `/api/integrations`, POST `/api/integrations/jira/*` | dashboard, Jira | M5 (not yet implemented)                     |
+| GET    | `/api/integrations`, PUT `/api/integrations/{name}`, POST `/api/integrations/{name}/test`, GET `/api/integrations/outbox` | dashboard | Integration status, configure, test connection, outbox queue |
 
 **Agent tool endpoints** — argument shapes are exactly those of `models/tools/catalog.py`. Access is scoped per agent token; every response carries an `evidence_ref` the agents cite.
 
@@ -702,8 +706,11 @@ All JSON endpoints are under `/api` on port 8001. The browser uses the HTML rout
 | GET    | `/api/tools/containers`         | —                                      | ✓            |          |          |
 | GET    | `/api/tools/metrics`            | `service` → recorded `orders_api:*` series + status snapshot | ✓ |     |          |
 | GET    | `/api/tools/git`                | `operation=history\|diff`, `ref` (deploy id, sha, `a..b`, `fix/<id>`) | ✓ | ✓ |      |
-| GET    | `/api/tools/code`               | `path` (jailed to the repo's readable roots) | ✓      | ✓        |          |
+| GET    | `/api/tools/code`               | `path` (jailed to the repo's readable roots; the Engineer reads the fix branch's view) | ✓ | ✓ |     |
+| GET    | `/api/tools/files`              | `path` → files under a readable directory | ✓         | ✓        |          |
 | POST   | `/api/tools/sandbox/patch`      | `ticket_id`, `diff`                    |              | ✓        |          |
+| POST   | `/api/tools/sandbox/config`     | `ticket_id`, `key`, `value` → server-written `app.env` diff |  | ✓ |          |
+| POST   | `/api/tools/sandbox/migration`  | `ticket_id`, `name`, `sql` → next numbered migration |     | ✓        |          |
 | POST   | `/api/tools/sandbox/test`       | `ticket_id`                            |              | ✓        |          |
 | POST   | `/api/tools/sandbox/loadtest`   | `ticket_id`, `requests?`               |              | ✓        |          |
 | GET    | `/api/tools/diff`               | `ticket_id` → diff + deterministic `risk_flags` |     |          | ✓        |
@@ -775,16 +782,18 @@ Measured on a 2-core box: baseline 0 % / p95 ≈ 10 ms. `oca/fakeco/fake_runner.
 4. Investigator findings stream into the ticket timeline live (SSE): deploy history, the diff of deploy #2, logs, metrics, containers → **ROOT CAUSE** card with confidence and evidence refs.
 5. Sandbox spins up at the production sha, reproduces the incident (BEFORE), the Engineer reads `app.env`, applies the one-line revert, re-runs the load test and tests; `validate` records AFTER matching the baseline.
 6. Guardian **RELEASE REVIEW**: config-only, risk ≈ 10/100, decision `APPROVE`.
-7. The command gate checklist goes green → ticket shows **Awaiting approval**. Presenter clicks **Approve** (the one human action in the demo; switch off in Settings for a fully autonomous run).
+7. The command gate checklist goes green. By default (`require_human_approval` off) the executor deploys immediately; switch it on in Settings to make the ticket wait for an **Approve** click, the one human action in the demo.
 8. Backup tag taken; the executor deploys in stages; verify re-runs the health check.
-9. Health passes → **INCIDENT RESOLVED**, MTTR card. The linked Jira issue transitions to Done (M5).
+9. Health passes → **INCIDENT RESOLVED**, MTTR card. The linked Jira issue transitions to Done with the MTTR comment.
+
+To run the demo again after a fix has shipped, reset the company first: `ops/reset.sh && ops/inject.sh timeout`. Re-running `inject.sh` alone is a no-op once its branch is merged (the redeploy only restarts the service), so there is no incident for OCA to find.
 10. **Optional closer:** disconnect the GX10 from the Internet and re-run. Everything still works.
 
 **Loyalty variant** (the one that impresses): inject `loyalty`. The right fix is a DB migration, which the Guardian scores ≥ 40; with the default risk threshold of 30 the gate **denies** and the dashboard offers **Override & Approve** — the human-in-the-loop beat. Raise the threshold in Settings for an autonomous run.
 
-**Jira variant** (M5): a support engineer files `OPS-123: "Customers report checkout failing"` in Jira with the `oca` label; within 30 s it appears as a ticket with the Jira key, and the flow continues from step 4.
+**Jira variant**: a support engineer files `OPS-123: "Customers report checkout failing"` in Jira with the `oca` label; within 30 s it appears as a ticket with the Jira key, and the flow continues from step 4.
 
-Measured on a development Mac with `OCA_MODEL=gpt-oss:latest` and the dry runner: detection → awaiting approval in **66 s** (diagnosis 29 s, patch 25 s, review 11 s).
+Measured on a development Mac with `OCA_MODEL=gpt-oss:latest` and the dry runner: detection → awaiting approval in **66 s** (diagnosis 29 s, patch 25 s, review 11 s). On the ASUS Ascent GX10 with `nemotron3:33b`, the real runner and auto-deploy: detection → resolved in **6m 38s** (diagnosis 64 s, fix 203 s, validation 21 s, staged deployment 89 s).
 
 ---
 

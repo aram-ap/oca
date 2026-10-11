@@ -56,7 +56,11 @@ class SubprocessRunner:
             raise RunnerError(f"{self.root} does not look like a driftwood clone (ops/deploy.sh missing)")
         self.sandbox = ComposeSandbox(self.root, data_dir, load_profile(sandbox_profile),
                                       sandbox_api_url, sandbox_prom_url, self._sandbox_run)
-        self.worktree = self.sandbox.worktree
+
+    @property
+    def worktree(self) -> Path:
+        """The current sandbox checkout; its name changes with every sandbox the ComposeSandbox starts."""
+        return self.sandbox.worktree
 
     async def _sandbox_run(self, *argv: str, **kwargs):
         return await self._run(*argv, **kwargs)

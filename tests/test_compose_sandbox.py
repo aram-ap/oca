@@ -111,12 +111,14 @@ async def test_lifecycle_owns_resources_without_company_sandbox_scripts(sandbox_
     assert "VENDOR_TOKEN" not in services["orders-api"]["environment"]
     assert "labels" not in services["frontend"]
     assert services["postgres"]["volumes"][1]["read_only"]
-    assert services["orders-api"]["volumes"][0]["source"] == str(r.sandbox.runtime / "logs")
+    assert services["orders-api"]["volumes"][0]["source"] == str(r.sandbox.logs)
     assert services["loadgen"]["deploy"]["replicas"] == 0
     assert services["loadgen"]["profiles"] == ["oca-loadtesting"]
 
-    # Rebuilding retains the sandbox DB credential; the production checkout is unchanged.
+    # Rebuilding retains the sandbox DB credential and checkout; the production checkout is unchanged.
+    first_checkout = r.worktree
     await r.sandbox_up("HEAD")
+    assert r.worktree == first_checkout
     assert json.loads(r.sandbox.model_path.read_text())["services"]["postgres"]["environment"]["POSTGRES_PASSWORD"] == password
     assert (await r.sandbox_loadtest(100)).error_rate_pct == 25
     assert (await r.sandbox_tests()).total == 2
@@ -128,13 +130,34 @@ async def test_lifecycle_owns_resources_without_company_sandbox_scripts(sandbox_
             assert "--env-file" in argv and str(r.root / ".env") not in argv
             assert argv[argv.index("-p") + 1] == r.sandbox.project
     await r.sandbox_reset_db()
+    assert r.worktree == first_checkout
     await r.sandbox_down()
-    assert not r.sandbox.runtime.exists()
+    assert_torn_down(r)
     assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=r.root).decode().strip() == original_sha
     assert "production-secret" in (r.root / ".env").read_text()
     assert (r.root / "services/orders-api/tests/test_smoke.py").read_text() == "def test_original(): pass\n"
     assert not (r.root / ".sandbox").exists()
     await r.sandbox_down()  # idempotent
+
+    # Docker Desktop refuses a bind path that was deleted and recreated, so the next sandbox gets new
+    # checkout/log directories under the persistent runtime directory, and a new credential.
+    await r.sandbox_up("HEAD")
+    assert r.worktree != first_checkout and r.worktree.is_dir() and r.worktree.parent == r.sandbox.runtime
+    model = json.loads(r.sandbox.model_path.read_text())
+    assert model["services"]["orders-api"]["volumes"][0]["source"] == str(r.sandbox.logs) != str(first_checkout.parent / "logs")
+    assert model["services"]["postgres"]["environment"]["POSTGRES_PASSWORD"] != password
+    assert model["services"]["oca-tests"]["volumes"][0]["source"] == str(r.worktree)
+    await r.sandbox_down()
+    assert_torn_down(r)
+
+
+def assert_torn_down(r):
+    """Containers' bind sources and generated files are gone; the runtime directory and owner record stay."""
+    assert not r.worktree.exists() and not r.sandbox.logs.exists()
+    assert not r.sandbox.model_path.exists() and not r.sandbox.env_file.exists()
+    assert r.sandbox.runtime.is_dir() and r.sandbox.marker.exists()
+    assert not any(line.strip().endswith(r.sandbox.runtime.name) for line in
+                   subprocess.check_output(["git", "worktree", "list"], cwd=r.root).decode().splitlines()[1:])
 
 
 async def test_tests_read_the_patch_checkout_in_an_isolated_container(sandbox_runner):
@@ -180,7 +203,7 @@ async def test_unsafe_compose_models_are_rejected_before_startup(sandbox_runner,
     with pytest.raises(RunnerError):
         await r.sandbox_up("HEAD")
     assert not any(argv[0] == "docker" and "up" in argv for argv, _ in r.commands)
-    assert not r.sandbox.runtime.exists()
+    assert_torn_down(r)
 
 
 async def test_partial_startup_is_cleaned_and_cleanup_failure_can_be_retried(sandbox_runner):
@@ -188,7 +211,7 @@ async def test_partial_startup_is_cleaned_and_cleanup_failure_can_be_retried(san
     r.fail_up = True
     with pytest.raises(RunnerError, match="startup failed"):
         await r.sandbox_up("HEAD")
-    assert not r.sandbox.runtime.exists()
+    assert_torn_down(r)
     assert any("down" in argv for argv, _ in r.commands)
     r.fail_up = False
     await r.sandbox_up("HEAD")
@@ -198,7 +221,7 @@ async def test_partial_startup_is_cleaned_and_cleanup_failure_can_be_retried(san
     assert r.sandbox.marker.exists() and r.worktree.exists()
     r.fail_down = False
     await r.sandbox_down()
-    assert not r.sandbox.runtime.exists()
+    assert_torn_down(r)
 
 
 async def test_cleanup_refuses_an_unowned_directory(sandbox_runner):
@@ -216,7 +239,7 @@ async def test_cleanup_can_remove_containers_when_checkout_is_already_gone(sandb
     await r.sandbox_up("HEAD")
     await r._run("git", "worktree", "remove", "--force", str(r.worktree))
     await r.sandbox_down()
-    assert not r.sandbox.runtime.exists()
+    assert_torn_down(r)
     argv, kwargs = next((argv, kwargs) for argv, kwargs in reversed(r.commands) if "down" in argv)
     assert kwargs["cwd"] == r.sandbox.runtime
 
