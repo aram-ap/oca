@@ -25,24 +25,35 @@
     if (root.dataset.pagerStart === 'last') { prev.innerHTML = '&larr; Earlier'; next.innerHTML = 'Later &rarr;'; }
 
     function rows() { return Array.from(root.querySelectorAll(root.dataset.pager)); }
+    let rendering = false;
     function render() {
+      if (rendering) return;  // our own DOM writes must never re-trigger us
+      rendering = true;
+      try { paint(); } finally { rendering = false; }
+    }
+    function paint() {
       const all = rows(), total = all.length;
       const pages = size === 0 ? 1 : Math.max(1, Math.ceil(total / size));
       if (follow) page = pages;
       page = Math.min(Math.max(1, page), pages);
       all.forEach((row, i) => {
         const visible = size === 0 || (i >= (page - 1) * size && i < page * size);
-        row.hidden = !visible;
+        if (row.hidden === visible) row.hidden = !visible;
       });
       const from = total === 0 ? 0 : (size === 0 ? 1 : (page - 1) * size + 1);
       const to = size === 0 ? total : Math.min(total, page * size);
-      status.textContent = total === 0 ? 'No entries' : `${from}–${to} of ${total} · page ${page}/${pages}`;
+      const text = total === 0 ? 'No entries' : `${from}–${to} of ${total} · page ${page}/${pages}`;
+      if (status.textContent !== text) status.textContent = text;  // writing identical text still mutates the DOM
       prev.disabled = page <= 1; next.disabled = page >= pages;
     }
     select.addEventListener('change', () => { size = parseInt(select.value, 10); try { localStorage.setItem(key, String(size)); } catch (e) {} render(); });
     prev.addEventListener('click', () => { follow = false; page -= 1; render(); });
     next.addEventListener('click', () => { page += 1; render(); const pages = size === 0 ? 1 : Math.ceil(rows().length / size); follow = root.dataset.pagerStart === 'last' && page >= pages; });
-    new MutationObserver(() => render()).observe(root, { childList: true, subtree: true });
+    // Watch the row container only (tbody / ul), never the controls we write to: observing the whole root
+    // with subtree=true made every status update re-fire the observer and froze the page.
+    const first = root.querySelector(root.dataset.pager);
+    const container = (first && first.parentElement) || root.querySelector('tbody, ul, ol') || root;
+    new MutationObserver(() => render()).observe(container, { childList: true });
     render();
   }
 
