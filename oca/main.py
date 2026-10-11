@@ -117,12 +117,18 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
     return app
 
 
+GRACEFUL_SHUTDOWN_S = 5
+
+
 def main() -> None:
     import uvicorn
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     settings = Settings.from_env()
-    uvicorn.run(create_app(settings), host=settings.host, port=settings.port, log_level="info")
+    # Dashboard SSE streams stay open indefinitely; without a graceful-shutdown timeout uvicorn would wait
+    # for them forever after SIGTERM, leaving a process that no longer listens but keeps its scheduler running.
+    uvicorn.run(create_app(settings), host=settings.host, port=settings.port, log_level="info",
+                timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S)
 
 
 if __name__ == "__main__":
