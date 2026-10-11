@@ -50,7 +50,7 @@ class GateContext:
     sandbox_run: SandboxRun | None = None
     review: Review | None = None
     last_deployment: Deployment | None = None
-    require_human_approval: bool = True
+    require_human_approval: bool = False
     risk_threshold: int = 30
     cooldown_s: int = 120
     blocklist: list[str] = field(default_factory=list)

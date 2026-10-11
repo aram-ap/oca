@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -260,12 +261,38 @@ class SubprocessRunner:
 
     # ------------------------------------------------------------- sandbox
 
+    async def _ensure_worktree(self) -> None:
+        """Guard against a stale ``.sandbox`` directory that is not a registered git worktree.
+
+        Docker writes root-owned logs into the sandbox dir, so ``git worktree remove`` can fail
+        silently and leave a plain directory behind. ``ops/sandbox.sh up`` then runs
+        ``git -C .sandbox checkout`` which, inside a plain subdirectory, checks out the
+        *production* clone. Moving the leftover aside (a rename needs only the parent) makes
+        the script create a real worktree again; a production checkout left on a fix branch or
+        detached HEAD by an earlier run is put back on main when it is clean.
+        """
+        _, listed, _ = await self._run("git", "worktree", "list", "--porcelain", timeout=15, check=False)
+        registered = any(line.strip() == f"worktree {self.worktree}" for line in listed.splitlines())
+        if self.worktree.exists() and not registered:
+            stale = self.worktree.with_name(f".sandbox-stale-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
+            self.worktree.rename(stale)
+            await self._run("git", "worktree", "prune", timeout=15, check=False)
+            log.warning("%s was not a git worktree; moved it to %s", self.worktree, stale)
+        _, branch, _ = await self._run("git", "rev-parse", "--abbrev-ref", "HEAD", timeout=15, check=False)
+        if branch.strip() != "main":
+            _, dirty, _ = await self._run("git", "status", "--porcelain", "--", "services", "db", "prometheus",
+                                          "docker-compose.yml", timeout=15, check=False)
+            if not dirty.strip():
+                log.warning("production checkout was on %r; returning it to main", branch.strip())
+                await self._run("git", "checkout", "-q", "main", timeout=30)
+
     async def sandbox_up(self, ref: str | None = None) -> SandboxInfo:
         argv = ["ops/sandbox.sh", "up"]
         if ref:
             self._check_ref(ref)
             argv.append(ref)
         async with self._mutate:
+            await self._ensure_worktree()
             _, out, _ = await self._run(*argv, timeout=1200)
         info = self._last_json(out)
         return SandboxInfo(git_sha=str(info.get("git_sha", "")), version=str(info.get("version", "")), ref=ref)

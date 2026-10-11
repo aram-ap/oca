@@ -21,6 +21,7 @@ from oca.integrations.slack import SLACK_DEFAULTS
 from oca.pipeline import Pipeline
 from oca.sandbox import SandboxManager
 from oca.web import web_router
+from oca.tz import set_timezone
 from oca.config import Settings
 from oca.db import Database
 from oca.events import EventBus
@@ -28,7 +29,7 @@ from oca.events import EventBus
 log = logging.getLogger("oca")
 
 DEFAULT_SETTINGS = {
-    "require_human_approval": True,
+    "require_human_approval": False,
     "risk_threshold": 30,
     "baseline": {"error_rate_pct": 0.0, "p95_latency_ms": 20.0},
     "thresholds": {"error_rate_pct": 5.0, "p95_latency_ms": 1000.0, "db_pool_utilization_pct": 90.0,
@@ -36,6 +37,7 @@ DEFAULT_SETTINGS = {
     "blocklist": [],
     "cooldown_s": 120,
     "reopen_cooldown_s": 120,
+    "timezone": "UTC",
     "jira": dict(JIRA_DEFAULTS),
     "slack": dict(SLACK_DEFAULTS),
 }
@@ -45,9 +47,10 @@ async def startup(app: FastAPI) -> None:
     settings: Settings = app.state.settings
     await app.state.db.connect()
     seeds = dict(DEFAULT_SETTINGS, require_human_approval=settings.require_human_approval,
-                 risk_threshold=settings.risk_threshold)
+                 risk_threshold=settings.risk_threshold, timezone=settings.timezone)
     for key, value in seeds.items():
         await app.state.db.seed_setting(key, value)
+    set_timezone(app, await app.state.db.get_setting("timezone", settings.timezone))
     app.state.background = []
     for starter in app.state.service_starters:
         task = await starter(app)

@@ -14,7 +14,7 @@ from oca.api.tickets import SSE_HEADERS, event_stream
 from oca.auth import Principal
 from oca.integrations import IntegrationError, integration_status, save_integration_settings
 from oca.schemas import Actor, EventType, Role, TicketEvent, TicketStatus
-from oca.web.common import TEMPLATES, is_fragment, render, web_user
+from oca.web.common import COMMON_TIMEZONES, TEMPLATES, is_fragment, render, set_timezone, web_user
 from oca.web.topology import topology_context
 
 router = APIRouter(dependencies=[Depends(web_user)])
@@ -259,6 +259,7 @@ async def settings_page(request: Request, saved: str | None = None, user: Princi
 async def _settings_context(request: Request) -> dict[str, Any]:
     db = request.app.state.db
     return {"stored": await db.all_settings(), "integrations": await integration_status(request.app),
+            "timezones": COMMON_TIMEZONES,
             "allowlist": request.app.state.settings.allowlist_path.read_text(encoding="utf-8")}
 
 
@@ -308,9 +309,14 @@ async def settings_integration_test(request: Request, name: str, user: Principal
 @router.post("/settings")
 async def settings_save(request: Request, require_human_approval: str | None = Form(None),
                         risk_threshold: int = Form(30), cooldown_s: int = Form(120), blocklist: str = Form(""),
-                        user: Principal = Depends(_user)):
+                        timezone: str = Form("UTC"), user: Principal = Depends(_user)):
     db = request.app.state.db
     await db.set_setting("require_human_approval", require_human_approval is not None)
+    try:
+        set_timezone(request.app, timezone.strip())
+        await db.set_setting("timezone", timezone.strip())
+    except ValueError:
+        pass  # keep the previous zone; the page shows what is in effect
     await db.set_setting("risk_threshold", max(0, min(100, risk_threshold)))
     await db.set_setting("cooldown_s", max(0, cooldown_s))
     await db.set_setting("blocklist", [b.strip() for b in blocklist.replace("\n", ",").split(",") if b.strip()])

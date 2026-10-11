@@ -12,6 +12,7 @@ from oca.auth import Principal, current_principal, require
 from oca.config import Settings
 from oca.db import Database
 from oca.integrations import apply_settings, mask_secrets, merge_secrets
+from oca.tz import set_timezone
 from oca.schemas import LocalAIStats, Role, TicketEvent
 
 router = APIRouter(tags=["system"])
@@ -25,6 +26,7 @@ SETTING_KEYS: dict[str, Any] = {
     "blocklist": list,
     "cooldown_s": int,
     "reopen_cooldown_s": int,
+    "timezone": str,
     "jira": dict,
     "slack": dict,
 }
@@ -93,6 +95,13 @@ async def put_settings(changes: dict[str, Any], request: Request, db: Database =
             raise HTTPException(422, f"{key} must be a {expected.__name__}")
         if key == "risk_threshold" and not 0 <= value <= 100:
             raise HTTPException(422, "risk_threshold must be 0-100")
+        if expected is str and not isinstance(value, str):
+            raise HTTPException(422, f"{key} must be a string")
+        if key == "timezone":
+            try:
+                set_timezone(request.app, value)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc))
         if key in ("jira", "slack"):
             value = merge_secrets(key, value, await db.get_setting(key, {}) or {})
         await db.set_setting(key, value)

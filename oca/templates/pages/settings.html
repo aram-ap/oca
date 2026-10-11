@@ -9,6 +9,9 @@
     <label>Risk threshold (Guardian score must be below) <input type="number" name="risk_threshold" min="0" max="100" value="{{ stored.risk_threshold }}"></label>
     <label>Deployment cooldown (seconds) <input type="number" name="cooldown_s" min="0" value="{{ stored.cooldown_s }}"></label>
     <label>Blocked actions (comma separated) <input name="blocklist" value="{{ stored.blocklist | join(', ') }}" placeholder="restart_service, rollback"></label>
+    <label>Time zone <small class="muted">(IANA name; dashboard timestamps are shown in it, currently {{ tz_name }})</small>
+      <input name="timezone" list="tz-options" value="{{ stored.timezone }}" placeholder="America/Los_Angeles">
+      <datalist id="tz-options">{% for z in timezones %}<option value="{{ z }}">{% endfor %}</datalist></label>
     <button type="submit">Save</button>
   </form>
   <div>
