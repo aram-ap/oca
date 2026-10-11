@@ -103,24 +103,72 @@ class Executor:
                 else:
                     await self._stage(dep, stage, pct)
 
-            verdict = await self._verify(dep, ticket, pre.metrics)
-            if verdict["ok"]:
-                dep = await self.db.update_deployment(dep.id, status=DeploymentStatus.succeeded, finished_at=utcnow(),
-                                                      evidence={**dep.evidence, "verify": verdict["runs"]})
-                if ticket:
-                    await self._resolve(ticket.id, dep)
-            elif verdict["worse"] or not verdict["improved"] or ticket is None:
-                dep = await self._auto_restore(dep, ticket, verdict)
-            else:
-                dep = await self._hold(dep, ticket, verdict)
+            dep = await self._conclude(dep, ticket, pre.metrics)
         except Exception as exc:  # noqa: BLE001 - any failure is recorded on the ticket
-            log.exception("deployment %s failed", dep.id)
-            dep = await self.db.update_deployment(dep.id, status=DeploymentStatus.failed, finished_at=utcnow(),
-                                                  evidence={**dep.evidence, "error": str(exc)})
-            await self._event(dep.ticket_id, EventType.error, {"where": "executor", "deployment_id": dep.id, "error": str(exc)})
-            if ticket:
-                await self.db.set_status(ticket.id, TicketStatus.failed, Actor.executor, note=str(exc)[:200])
+            dep = await self._fail(dep, ticket, exc)
         return dep
+
+    async def _conclude(self, dep: Deployment, ticket, pre: dict[str, float]) -> Deployment:
+        """Verify production after the change is fully applied and settle the deployment and ticket."""
+        verdict = await self._verify(dep, ticket, pre)
+        if verdict["ok"]:
+            dep = await self.db.update_deployment(dep.id, status=DeploymentStatus.succeeded, finished_at=utcnow(),
+                                                  evidence={**dep.evidence, "verify": verdict["runs"]})
+            if ticket:
+                await self._resolve(ticket.id, dep)
+        elif verdict["worse"] or not verdict["improved"] or ticket is None:
+            dep = await self._auto_restore(dep, ticket, verdict)
+        else:
+            dep = await self._hold(dep, ticket, verdict)
+        return dep
+
+    async def _fail(self, dep: Deployment, ticket, exc: Exception) -> Deployment:
+        log.exception("deployment %s failed", dep.id)
+        dep = await self.db.update_deployment(dep.id, status=DeploymentStatus.failed, finished_at=utcnow(),
+                                              evidence={**dep.evidence, "error": str(exc)})
+        await self._event(dep.ticket_id, EventType.error, {"where": "executor", "deployment_id": dep.id, "error": str(exc)})
+        if ticket:
+            await self.db.set_status(ticket.id, TicketStatus.failed, Actor.executor, note=str(exc)[:200])
+        return dep
+
+    # ------------------------------------------------------------------ resume
+
+    async def _last_stage(self, dep: Deployment) -> str | None:
+        if not dep.ticket_id:
+            return None
+        stages = [e.payload.get("stage") for e in await self.db.list_events(dep.ticket_id)
+                  if e.type is EventType.run and e.payload.get("deployment_id") == dep.id]
+        return stages[-1] if stages else None
+
+    async def resume_interrupted(self) -> list[str]:
+        """After a server restart, pick up deployments a previous process left ``running``.
+
+        Once the change reached the ``full`` stage it is live in production, so the only thing missing is
+        verification: rerun that and conclude as usual. If the process died before that (backup, canary,
+        widen) the state of production is ambiguous, so the deployment and ticket are marked failed for a
+        human to inspect rather than guessed at."""
+        resumed: list[str] = []
+        for dep in await self.db.list_deployments(limit=200):
+            if dep.status is not DeploymentStatus.running or dep.id in self.tasks:
+                continue
+            stage = await self._last_stage(dep)
+            ticket = await self.db.get_ticket(dep.ticket_id) if dep.ticket_id else None
+            if stage in ("full", "settle", "verify"):
+                log.warning("resuming verification of %s (last stage %r before the restart)", dep.id, stage)
+                await self._stage(dep, "resume", 100, reason="server restarted during verification; re-verifying")
+                self.tasks[dep.id] = asyncio.create_task(self._resume_verify(dep, ticket), name=f"oca-executor-{dep.id}")
+            else:
+                reason = f"server restarted during the {stage or 'backup'} stage; production state unverified"
+                log.warning("%s: %s", dep.id, reason)
+                await self._fail(dep, ticket, RuntimeError(reason))
+            resumed.append(dep.id)
+        return resumed
+
+    async def _resume_verify(self, dep: Deployment, ticket) -> Deployment:
+        try:
+            return await self._conclude(dep, ticket, dict(dep.evidence.get("pre_deploy") or {}))
+        except Exception as exc:  # noqa: BLE001
+            return await self._fail(dep, ticket, exc)
 
     async def _verify(self, dep: Deployment, ticket, pre: dict[str, float] | None = None) -> dict[str, Any]:
         """Three outcomes: ok (healthy N times in a row), worse (regression vs. just before the deploy), or improved-but-breaching.
@@ -244,3 +292,9 @@ class Executor:
             if ticket:
                 await self.db.set_status(ticket.id, TicketStatus.rolled_back, Actor.executor, note=reason)
         return dep
+
+
+async def start_executor_resume(app: FastAPI) -> None:
+    """Service starter: finish deployments the previous process was verifying when it stopped."""
+    await app.state.executor.resume_interrupted()
+    return None

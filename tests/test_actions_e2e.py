@@ -130,3 +130,36 @@ async def test_engineer_tools_require_prepare_and_reject_bad_diffs(app, client, 
     rejected = (await client.post("/api/tools/sandbox/patch", json={"ticket_id": ticket.id, "diff": "garbage"}, headers=eng)).json()
     assert rejected["applied"] is False and "git apply" in rejected["error"]
     assert (await client.post("/api/tools/sandbox/patch", json={"ticket_id": ticket.id, "diff": REVERT}, headers=auth(Role.investigator))).status_code == 403
+
+
+async def test_restart_resumes_a_deployment_left_verifying(app, client, auth):
+    """A deployment that reached `full` before the process died is re-verified and resolved on startup."""
+    from oca.executor import start_executor_resume
+    from oca.schemas import ActionName, Actor, DeploymentStatus, EventType, TicketEventCreate
+
+    ticket = await detect(app)
+    db = app.state.db
+    # Apply the fix the way the executor would have before dying in the settle stage.
+    record = await app.state.runner.set_config_and_deploy("DB_TIMEOUT_MS", 3000, ticket.id)
+    pre = {"error_rate_pct": 25.0, "p95_latency_ms": 10000.0}
+    dep = await db.create_deployment(ticket.id, ActionName.set_config, {"service": "orders-api", "key": "DB_TIMEOUT_MS", "value": 3000},
+                                     evidence={"pre_deploy": pre}, status=DeploymentStatus.running)
+    await db.update_deployment(dep.id, git_sha=record.git_sha)
+    await db.set_status(ticket.id, TicketStatus.deploying, Actor.executor, deployment_id=dep.id)
+    for stage, pct in (("canary", 10), ("full", 100), ("settle", 100)):
+        await db.append_event(ticket.id, TicketEventCreate(actor=Actor.executor, type=EventType.run,
+                                                           payload={"stage": stage, "pct": pct, "deployment_id": dep.id}))
+    # A second deployment that died mid-canary cannot be trusted and is failed for a human.
+    other = await db.create_deployment(None, ActionName.restart_service, {"service": "orders-api"}, status=DeploymentStatus.running)
+
+    await start_executor_resume(app)
+    await app.state.executor.wait(dep.id)
+
+    final = (await client.get(f"/api/tickets/{ticket.id}", headers=auth(Role.admin))).json()
+    assert final["status"] == "resolved"
+    stages = [e["payload"]["stage"] for e in final["events"] if e["type"] == "run"]
+    assert "resume" in stages and "verify" in stages
+    assert (await db.get_deployment(dep.id)).status is DeploymentStatus.succeeded
+    assert (await db.get_deployment(other.id)).status is DeploymentStatus.failed
+    # Idempotent: a second startup finds nothing to resume.
+    assert await app.state.executor.resume_interrupted() == []

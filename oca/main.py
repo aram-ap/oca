@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from oca.api import api_router
 from oca.backup import BackupManager
 from oca.checks.scheduler import start_scheduler
-from oca.executor import Executor
+from oca.executor import Executor, start_executor_resume
 from oca.gate import load_allowlist
 from oca.model import set_model
 from oca.reports import start_reports
@@ -118,7 +118,7 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
     app.state.pipeline = Pipeline(app)
     app.state.scheduler = None
     # Later phases append coroutines ``async def start(app) -> asyncio.Task | None`` here.
-    app.state.service_starters = [start_integrations, start_scheduler, start_outbox, start_reports]
+    app.state.service_starters = [start_integrations, start_scheduler, start_outbox, start_reports, start_executor_resume]
     app.include_router(api_router, prefix="/api")
     app.mount("/static", StaticFiles(directory=str(Path(__file__).with_name("static"))), name="static")
     app.include_router(web_router)
