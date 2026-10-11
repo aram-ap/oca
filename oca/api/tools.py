@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import re
 from datetime import datetime, timezone
 from typing import Literal
@@ -218,6 +220,8 @@ from pydantic import BaseModel, Field  # noqa: E402
 from oca.api.deps import get_sandbox  # noqa: E402
 from oca.sandbox import SandboxError  # noqa: E402
 
+log = logging.getLogger("oca.tools")
+
 
 class PatchIn(BaseModel):
     ticket_id: str = Field(min_length=1)
@@ -245,6 +249,7 @@ class LoadtestIn(TicketIn):
 def _sandbox_error(exc: Exception) -> HTTPException:
     if isinstance(exc, SandboxError):
         return HTTPException(409, str(exc))
+    log.error("sandbox tool failed: %s: %s", type(exc).__name__, exc, exc_info=exc)  # the agent only sees the summary
     return HTTPException(502, f"sandbox operation failed: {exc}")
 
 

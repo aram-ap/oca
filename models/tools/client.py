@@ -39,7 +39,9 @@ def _http_json(base_url: str, token: str, method: str, path: str, arguments: dic
     except HTTPError as exc:
         body = exc.read(2000).decode(errors="replace") if exc.fp else ""
         exc.close()
-        raise ToolAPIError(f"Main Process request failed (HTTP {exc.code}); no retry", exc.code, body) from exc
+        detail = body.strip()[:300]
+        raise ToolAPIError(f"Main Process request failed (HTTP {exc.code}){': ' + detail if detail else ''}; no retry",
+                           exc.code, body) from exc
     except (URLError, OSError, ValueError) as exc:
         raise ToolAPIError("Main Process request failed; no retry") from exc
 

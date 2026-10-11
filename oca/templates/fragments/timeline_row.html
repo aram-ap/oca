@@ -13,9 +13,15 @@
     <code>{{ p.tool }}</code>{% if p.arguments %} <span class="muted">{{ p.arguments | tojson if p.arguments is mapping else p.arguments }}</span>{% endif %}
     {% if p.ok is false or p.applied is false %}<span class="badge bad">failed</span>{% endif %}
     {% if p.evidence_ref %}<span class="muted">→ {{ p.evidence_ref }}</span>{% endif %}
-    {% if p.tool == "apply_patch" and p.applied %} applied to <code>{{ p.branch }}</code> ({{ p.files_changed | join(", ") }}){% elif p.tool == "apply_patch" %} <span class="muted">{{ p.error }}</span>{% endif %}
+    {% if p.tool in ("apply_patch", "set_config", "create_migration") %}
+      {% if p.applied %}<span class="badge ok">applied</span> to <code>{{ p.branch }}</code>{% if p.commit %} @ <code>{{ p.commit }}</code>{% endif %} ({{ p.files_changed | join(", ") }}){% else %} <span class="muted">{{ p.error }}</span>{% endif %}
+      {% if p.diff %}<details class="diff-block" {% if p.applied %}open{% endif %}><summary>diff{% if p.diff_truncated %} (truncated){% endif %}{% if p.key %} · {{ p.key }}={{ p.value }}{% endif %}</summary>{{ p.diff | diff_html }}</details>{% endif %}
+    {% endif %}
     {% if p.tool == "run_loadtest" %} {{ p.phase }}: error rate {{ p.error_rate_pct }}% · p95 {{ p.p95_ms }} ms{% endif %}
-    {% if p.tool == "run_tests" %} tests {{ "passed" if p.passed else (p.failed ~ " failed") }}{% endif %}
+    {% if p.tool == "run_tests" %} tests <span class="badge {{ 'ok' if p.passed else 'bad' }}">{{ "passed" if p.passed else (p.failed ~ " failed") }}</span>{% if p.command %} <code class="cmd">$ {{ p.command }}</code>{% endif %}
+      {% if p.output %}<details><summary>test output</summary><pre>{{ p.output }}</pre></details>{% endif %}{% endif %}
+    {% if p.commands %}<details class="commands"><summary>{{ p.commands | length }} command{{ "s" if p.commands | length != 1 }} run</summary>
+      <ul class="cmd-list">{% for c in p.commands %}<li{% if c.rc %} class="bad"{% endif %}><code>$ {{ c.cmd }}</code>{% if c.rc %} <span class="badge bad">rc {{ c.rc }}</span>{% endif %}</li>{% endfor %}</ul></details>{% endif %}
   {% elif e.type.value == "diagnosis" %}
     {% set d = p.diagnosis %}
     <strong>ROOT CAUSE</strong> <span class="badge">confidence {{ (d.confidence * 100) | round | int }}%</span>
@@ -25,7 +31,7 @@
   {% elif e.type.value == "patch" %}
     {% set f = p.patch %}
     <strong>Patch proposed</strong> on <code>{{ f.patch_ref }}</code> · reproduced {{ "✓" if f.reproduced else "✗" }} · passed {{ "✓" if f.passed else "✗" }}
-    {% if f.diff and f.diff != "none" %}<details><summary>diff</summary><pre>{{ f.diff }}</pre></details>{% endif %}
+    {% if f.diff and f.diff != "none" %}<details class="diff-block"><summary>diff</summary>{{ f.diff | diff_html }}</details>{% endif %}
   {% elif e.type.value == "sandbox_result" %}
     <strong>Sandbox {{ p.phase }}</strong> ({{ p.sandbox_run_id }}){% if p.phase == "before" %}: incident {{ "reproduced ✓" if p.reproduced else "NOT reproduced ✗" }}{% else %}: fix {{ "proven ✓" if p.passed else "NOT proven ✗" }}{% endif %}
     <table class="compact" style="margin:.4rem 0 0;width:auto">

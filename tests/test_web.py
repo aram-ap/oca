@@ -68,3 +68,34 @@ async def test_settings_form_roundtrip(app, client, auth):
     assert await app.state.db.get_setting("require_human_approval") is False
     assert await app.state.db.get_setting("risk_threshold") == 55
     assert await app.state.db.get_setting("blocklist") == ["rollback", "restart_service"]
+
+
+async def test_ticket_page_shows_engineer_diffs_and_commands(app, client, auth):
+    cookie = auth(Role.admin)
+    app.state.runner.inject("timeout")
+    await app.state.scheduler.tick(force=True)
+    ticket = (await app.state.db.list_tickets())[0]
+    assert (await client.post(f"/api/sandbox/{ticket.id}/prepare", headers=auth(Role.orchestrator))).status_code == 200
+    eng = auth(Role.engineer)
+    assert (await client.post("/api/tools/sandbox/config", json={"ticket_id": ticket.id, "key": "DB_TIMEOUT_MS", "value": 3000},
+                              headers=eng)).json()["applied"] is True
+    assert (await client.post("/api/tools/sandbox/test", json={"ticket_id": ticket.id}, headers=eng)).json()["passed"] is True
+
+    page = (await client.get(f"/tickets/{ticket.id}", headers=cookie)).text
+    assert "Engineer's changes" in page and 'class="d-add">+DB_TIMEOUT_MS=3000' in page and 'class="d-del">-DB_TIMEOUT_MS=100' in page
+    assert "$ git -C .sandbox apply" in page and "pytest services/orders-api/tests" in page and "test output" in page
+    fragment = (await client.get(f"/tickets/{ticket.id}/changes", headers=cookie)).text
+    assert 'id="changes"' in fragment and "set_config" in fragment and "command" in fragment
+
+
+async def test_shutdown_button_stops_the_server(app, client, auth):
+    import asyncio
+
+    stopped = asyncio.Event()
+    app.state.stopper = stopped.set
+    assert (await client.get("/settings", headers=auth(Role.admin))).text.count('action="/shutdown"') == 2
+    assert (await client.post("/api/shutdown", headers=auth(Role.engineer))).status_code == 403
+    page = await client.post("/shutdown", headers=auth(Role.admin))
+    assert page.status_code == 200 and "shutting down" in page.text
+    assert (await client.post("/api/shutdown", headers=auth(Role.admin))).json()["status"] == "shutting_down"
+    await asyncio.wait_for(stopped.wait(), 3)

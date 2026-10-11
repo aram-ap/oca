@@ -90,3 +90,10 @@
 @media (max-width: 1200px) { .system-map { grid-template-columns: minmax(0,1fr) 220px; }.map-inspector { padding: 20px 16px; }.map-toolbar > div { gap: 10px; }.map-toolbar .muted { display: none; } }
 @media (max-width: 1000px) { .system-map { grid-template-columns: 1fr; }.map-inspector { border-left: 0; border-top: 1px solid #2a3e4d; display: grid; grid-template-columns: 1fr 1fr; column-gap: 24px; }.map-inspector > .eyebrow, .map-inspector > h2 { grid-column: 1/-1; }.insight-stat { grid-row: span 2; }.inspector-ticket { grid-column: 1/-1; }.signal-explanation, .map-updated { grid-column: 1/-1; } }
 @media (max-width: 620px) { [data-theme="dark"] .main-content { padding: 22px 14px; }[data-theme="dark"] h1 { font-size: 1.35rem; }.map-toolbar { padding: 10px 12px; }.toolbar-label { font-size: .58rem; }.signal-toggle { min-width: 100px; font-size: .65rem; }.canvas-caption { padding-left: 16px; }.map-legend { padding-left: 16px; }.map-inspector { padding: 20px 16px; }.map-mode { margin-right: 20px; } }
+
+[data-theme="dark"] pre.diff .d-add { color: #8ce2b9; background: rgba(140,226,185,.08); }
+[data-theme="dark"] pre.diff .d-del { color: #ff9dad; background: rgba(255,157,173,.08); }
+[data-theme="dark"] pre.diff .d-hunk { color: #b9a4ff; }
+[data-theme="dark"] pre.diff .d-file { color: #98adbe; }
+[data-theme="dark"] .cmd-list li.bad code { color: #ff9dad; }
+[data-theme="dark"] .logout-button.danger { color: #ff9dad; }

@@ -389,7 +389,7 @@ class FakeRunner:
     # -------------------------------------------------------------- sandbox
 
     async def sandbox_up(self, ref: str | None = None) -> SandboxInfo:
-        self.calls.append(f"sandbox_up {ref}")
+        self.calls.append(f"ops/sandbox.sh up {ref or 'HEAD'}")
         if "sandbox_up_fails" in self.failure_modes:
             raise RunnerError("docker compose up failed", rc=1, stderr="orders-api: unhealthy")
         if ref is None or ref == self.sha:
@@ -403,13 +403,19 @@ class FakeRunner:
         self.sandbox = {"up": True, "ref": ref, "sha": sha}
         return SandboxInfo(git_sha=sha, version=version, ref=ref)
 
+    def command_mark(self) -> int:
+        return len(self.calls)
+
+    def commands_since(self, mark: int) -> list[dict[str, Any]]:
+        return [{"cmd": c, "rc": 0} for c in self.calls[mark:]]
+
     def _require_sandbox(self) -> None:
         if not self.sandbox["up"]:
             raise RunnerError("sandbox is not running; call sandbox_up first")
 
     async def sandbox_loadtest(self, n: int) -> SandboxMetrics:
         self._require_sandbox()
-        self.calls.append(f"sandbox_loadtest {n}")
+        self.calls.append(f"python3 ops/loadtest.py --sandbox --requests {n} --json")
         incident, _ = self._branch_state(self.sandbox["ref"] or self.sandbox["sha"])
         base = dict(INCIDENTS[incident]["loadtest"]) if incident else dict(HEALTHY_LOADTEST)
         failures = int(round(n * base["error_rate_pct"] / 100))
@@ -420,7 +426,7 @@ class FakeRunner:
 
     async def sandbox_tests(self) -> TestRunResult:
         self._require_sandbox()
-        self.calls.append("sandbox_tests")
+        self.calls.append("docker compose -p driftwood-sandbox run --rm oca-tests python -m pytest services/orders-api/tests -q")
         incident, _ = self._branch_state(self.sandbox["ref"] or self.sandbox["sha"])
         if incident == "timeout":
             return TestRunResult(passed=False, total=7, failed=1, duration_s=4.2, command="python3 -m pytest services/orders-api/tests -q",
@@ -433,15 +439,15 @@ class FakeRunner:
 
     async def sandbox_reset_db(self) -> None:
         self._require_sandbox()
-        self.calls.append("sandbox_reset_db")
+        self.calls.append("ops/sandbox.sh reset-db")
 
     async def sandbox_down(self) -> None:
-        self.calls.append("sandbox_down")
+        self.calls.append("ops/sandbox.sh down")
         self.sandbox = {"up": False, "ref": None, "sha": None}
 
     async def apply_patch_in_sandbox(self, branch: str, diff: str, message: str) -> PatchResult:
         self._require_sandbox()
-        self.calls.append(f"apply_patch {branch}")
+        self.calls.append(f"git -C .sandbox checkout -q -B {branch}")
         diff = diffcheck.normalize(diff)
         try:
             info = diffcheck.validate(diff)
@@ -467,6 +473,8 @@ class FakeRunner:
         b["commits"].insert(0, GitCommit(b["sha"], "OCA Engineer <oca@localhost>", _now().isoformat(), message))
         self.sandbox = {"up": True, "ref": branch, "sha": b["sha"]}
         stat = "\n".join(f" {f} | {info.added + info.removed} +-" for f in info.files)
+        self.calls += ["git -C .sandbox apply -p1 --whitespace=nowarn -  < (stdin)", "git -C .sandbox add -A services",
+                       f"git -C .sandbox commit -q -m {message!r}"]
         return PatchResult(applied=True, branch=branch, commit_sha=b["sha"], files_changed=list(info.files), stat=stat)
 
     async def sandbox_diff(self, branch: str) -> str:
@@ -487,7 +495,7 @@ class FakeRunner:
         return record
 
     async def deploy_branch(self, branch: str, note: str) -> DeployRecord:
-        self.calls.append(f"deploy_branch {branch}")
+        self.calls.append(f"git merge --no-ff {branch} && ops/deploy.sh")
         if branch not in self.branches:
             raise RunnerError(f"merge: {branch} - not something we can merge", rc=1)
         if "deploy_fails" in self.failure_modes:
@@ -499,7 +507,7 @@ class FakeRunner:
         return self._record(branch, list(b["files"]), note)
 
     async def set_config_and_deploy(self, key: str, value: int, note: str) -> DeployRecord:
-        self.calls.append(f"set_config {key}={value}")
+        self.calls.append(f"ops/deploy.sh (set {key}={value})")
         if "deploy_fails" in self.failure_modes:
             raise RunnerError("ops/deploy.sh failed", rc=1)
         self.config[key] = value
@@ -507,16 +515,16 @@ class FakeRunner:
         return self._record(f"set {key}={value} ({note})", ["services/orders-api/config/app.env"], note)
 
     async def restart_service(self, service: str) -> None:
-        self.calls.append(f"restart {service}")
+        self.calls.append(f"docker compose restart {service}")
         self.restarts.append(service)
 
     async def backup(self, tag: str) -> BackupRef:
-        self.calls.append(f"backup {tag}")
+        self.calls.append(f"git tag -f {tag}")
         self.tags[tag] = self.sha
         return BackupRef(tag=tag, sha=self.sha)
 
     async def restore(self, tag: str, note: str) -> DeployRecord:
-        self.calls.append(f"restore {tag}")
+        self.calls.append(f"git reset --hard {tag} && ops/deploy.sh")
         if tag not in self.tags:
             raise RunnerError(f"unknown tag {tag!r}", rc=128)
         target = self.tags[tag]

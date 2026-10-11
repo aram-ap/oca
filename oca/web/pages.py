@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from oca.api import actions as actions_api
 from oca.api import deployments as deployments_api
-from oca.api.system import ollama_loaded
+from oca.api.system import ollama_loaded, request_shutdown
 from oca.api.tickets import SSE_HEADERS, event_stream
 from oca.auth import Principal
 from oca.integrations import IntegrationError, integration_status, save_integration_settings
@@ -118,12 +118,29 @@ async def tickets(request: Request, status: TicketStatus | None = None, user: Pr
     return render(request, template, tickets=rows, status_filter=status)
 
 
+WRITE_TOOLS = ("apply_patch", "set_config", "create_migration")
+
+
+def _changes_context(events: list[TicketEvent]) -> dict[str, Any]:
+    """Applied sandbox patches and every shell command the Engineer's tools ran, in order."""
+    changes = [e for e in events if e.type is EventType.finding and e.payload.get("tool") in WRITE_TOOLS and e.payload.get("applied")]
+    commands = [c for e in events if e.type is EventType.finding for c in (e.payload.get("commands") or [])]
+    return {"changes": changes, "commands": commands}
+
+
 @router.get("/tickets/{ticket_id}")
 async def ticket_detail(request: Request, ticket_id: str, user: Principal = Depends(_user)):
     db = request.app.state.db
     ctx = await _gate_context(request, ticket_id)
     events = await db.list_events(ticket_id)
-    return render(request, "pages/ticket_detail.html", events=events, last_event_id=events[-1].id if events else 0, **ctx)
+    return render(request, "pages/ticket_detail.html", events=events, last_event_id=events[-1].id if events else 0,
+                  **_changes_context(events), **ctx)
+
+
+@router.get("/tickets/{ticket_id}/changes")
+async def ticket_changes(request: Request, ticket_id: str, user: Principal = Depends(_user)):
+    events = await request.app.state.db.list_events(ticket_id)
+    return render(request, "fragments/changes.html", ticket_id=ticket_id, **_changes_context(events))
 
 
 @router.get("/tickets/{ticket_id}/timeline")
@@ -249,6 +266,13 @@ async def logs(request: Request, user: Principal = Depends(_user)):
 
 
 # ----------------------------------------------------------------------- settings
+
+
+@router.post("/shutdown")
+async def shutdown_server(request: Request, user: Principal = Depends(_user)):
+    """Stop the OCA process (dashboard button). Production and the Driftwood stack are left as they are."""
+    request_shutdown(request.app)
+    return render(request, "pages/shutdown.html")
 
 
 @router.get("/settings")

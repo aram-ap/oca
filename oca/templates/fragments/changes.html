@@ -1,0 +1,19 @@
+<div class="panel" id="changes">
+  <h4>Engineer's changes</h4>
+  {% if changes %}
+    {% for c in changes %}{% set q = c.payload %}
+    <div class="change">
+      <div><code>{{ q.tool }}</code>{% if q.commit %} → <code>{{ q.commit }}</code>{% endif %} <span class="muted">{{ c.ts | ts }}</span> <a href="#event-{{ c.id }}" class="muted">timeline</a></div>
+      <div class="muted">{{ q.files_changed | join(", ") }}</div>
+      <details class="diff-block"{% if loop.last %} open{% endif %}><summary>diff</summary>{{ q.diff | diff_html }}</details>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p class="muted" style="margin:0">No patch applied to the sandbox yet.</p>
+  {% endif %}
+  {% if commands %}
+    <details class="commands"><summary>{{ commands | length }} command{{ "s" if commands | length != 1 }} run in the sandbox</summary>
+      <ul class="cmd-list">{% for c in commands %}<li{% if c.rc %} class="bad"{% endif %}><code>$ {{ c.cmd }}</code>{% if c.rc %} <span class="badge bad">rc {{ c.rc }}</span>{% endif %}</li>{% endfor %}</ul>
+    </details>
+  {% endif %}
+</div>

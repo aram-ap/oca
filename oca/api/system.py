@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
+import signal
+
 from typing import Any
 
 import httpx
@@ -30,6 +35,30 @@ SETTING_KEYS: dict[str, Any] = {
     "jira": dict,
     "slack": dict,
 }
+
+
+log = logging.getLogger("oca.system")
+SHUTDOWN_DELAY_S = 0.5
+
+
+def _default_stop() -> None:
+    os.kill(os.getpid(), signal.SIGTERM)  # uvicorn handles it: lifespan shutdown cancels tasks, then exits
+
+
+def request_shutdown(app, delay: float = SHUTDOWN_DELAY_S) -> None:
+    """Stop the server shortly after the current response is sent. ``app.state.stopper`` overrides the signal."""
+    if getattr(app.state, "shutting_down", False):
+        return
+    app.state.shutting_down = True
+    stopper = getattr(app.state, "stopper", None) or _default_stop
+    log.warning("shutdown requested from the dashboard; stopping in %.1fs", delay)
+    asyncio.get_running_loop().call_later(delay, stopper)
+
+
+@router.post("/shutdown")
+async def shutdown(request: Request, _: Principal = Depends(require(Role.admin))):
+    request_shutdown(request.app)
+    return {"status": "shutting_down", "in_s": SHUTDOWN_DELAY_S}
 
 
 @router.get("/health")

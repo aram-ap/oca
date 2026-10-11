@@ -16,6 +16,7 @@
   </div>
   <div>
     {% include "fragments/gate_status.html" %}
+    {% include "fragments/changes.html" %}
     <div class="panel">
       <h4>Detection</h4>
       <table class="compact" style="width:auto">
@@ -29,7 +30,11 @@
 <script>
   // When the stream pushes a status event, refresh the gate panel in place.
   document.addEventListener('htmx:sseMessage', function (e) {
-    if (e.detail && e.detail.type === 'status') { htmx.ajax('GET', '/tickets/{{ ticket.id }}/gate', {target: '#gate-panel', swap: 'outerHTML'}); }
+    if (!e.detail) return;
+    if (e.detail.type === 'status') { htmx.ajax('GET', '/tickets/{{ ticket.id }}/gate', {target: '#gate-panel', swap: 'outerHTML'}); }
+    if (e.detail.type === 'event' && /cmd-list|diff-block/.test(e.detail.data || '')) {
+      htmx.ajax('GET', '/tickets/{{ ticket.id }}/changes', {target: '#changes', swap: 'outerHTML'});
+    }
   });
 </script>
 {% endblock %}

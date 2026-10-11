@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,7 @@ class SubprocessRunner:
         self.service_urls = service_urls
         self.loadtest_rate = loadtest_rate
         self.calls: list[dict[str, Any]] = []
+        self._seq = 0
         self._mutate = asyncio.Lock()
         if not (self.root / "ops" / "deploy.sh").exists():
             raise RunnerError(f"{self.root} does not look like a driftwood clone (ops/deploy.sh missing)")
@@ -78,7 +80,9 @@ class SubprocessRunner:
                 raise
             raise RunnerError(f"{argv[0]} timed out after {timeout}s", list(argv), None)
         stdout, stderr = out.decode(errors="replace"), err.decode(errors="replace")
-        self.calls.append({"argv": list(argv), "rc": proc.returncode,
+        self._seq += 1
+        self.calls.append({"seq": self._seq, "argv": list(argv), "rc": proc.returncode,
+                           "cwd": str(cwd) if cwd else None, "stdin": stdin is not None,
                            "stdout_tail": stdout[-300:] if record_output else "[redacted]",
                            "stderr_tail": stderr[-500:] if record_output else "[redacted]"})
         del self.calls[:-200]
@@ -87,6 +91,24 @@ class SubprocessRunner:
             raise RunnerError(f"{' '.join(argv[:3])} failed (rc={proc.returncode}): {detail.strip()[-800:]}",
                               list(argv), proc.returncode, detail)
         return proc.returncode, stdout, stderr
+
+    def command_mark(self) -> int:
+        return self._seq
+
+    def commands_since(self, mark: int) -> list[dict[str, Any]]:
+        """Shell commands run after ``mark``, as display strings (paths relative to the clone)."""
+        out = []
+        for call in self.calls:
+            if call.get("seq", 0) <= mark:
+                continue
+            argv = [a.replace(str(self.root) + "/", "").replace(str(self.root), ".") for a in call["argv"]]
+            cmd = shlex.join(argv)
+            if call.get("stdin"):
+                cmd += "  < (stdin)"
+            if call.get("cwd") and call["cwd"] != str(self.root):
+                cmd = f"(cd {call['cwd'].replace(str(self.root), '.')} && {cmd})"
+            out.append({"cmd": cmd[:400], "rc": call["rc"]})
+        return out
 
     @staticmethod
     def _last_json(text: str) -> dict[str, Any]:
@@ -221,9 +243,13 @@ class SubprocessRunner:
         data = target.read_bytes()[:MAX_FILE_BYTES]
         return data.decode("utf-8", errors="replace")
 
+    def _worktree_ready(self) -> bool:
+        """A registered git worktree has a ``.git`` file; a leftover plain directory does not."""
+        return (self.worktree / ".git").exists()
+
     def _tree(self) -> Path:
         """The sandbox worktree when it exists (the Engineer's view), else production."""
-        return self.worktree if self.worktree.is_dir() else self.root
+        return self.worktree if self._worktree_ready() else self.root
 
     async def read_sandbox_file(self, rel_path: str) -> str:
         path = check_readable_path(rel_path)
@@ -313,7 +339,7 @@ class SubprocessRunner:
         self._check_ref(branch)
         if not branch.startswith("fix/"):
             raise RunnerError("Patch branches must be named fix/<ticket>")
-        if not self.worktree.is_dir():
+        if not self._worktree_ready():
             raise RunnerError("Sandbox worktree is missing; run sandbox_up first")
         diff = diffcheck.normalize(diff)
         try:

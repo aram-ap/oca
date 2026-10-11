@@ -1,0 +1,6 @@
+{% extends "base.html" %}{% block title %}Shutting down{% endblock %}
+{% block content %}
+<h3>OCA is shutting down</h3>
+<p>Background pipelines are being cancelled and the server process will exit in a moment. Production services and the sandbox containers are not touched.</p>
+<p class="muted">Start it again from a terminal (for example <code>python -m oca.main</code> or your start script) and reload this page.</p>
+{% endblock %}

@@ -23,6 +23,8 @@ log = logging.getLogger("oca.sandbox")
 
 
 RECORDED_DIFF_CHARS = 4000
+RECORDED_OUTPUT_CHARS = 1500
+MAX_RECORDED_COMMANDS = 40
 APP_ENV = "services/orders-api/config/app.env"
 MIGRATIONS_DIR = "services/orders-api/migrations"
 
@@ -145,6 +147,16 @@ class SandboxManager:
 
     # ------------------------------------------------------------ engineer tools
 
+    def _mark(self) -> int:
+        mark = getattr(self.runner, "command_mark", None)
+        return mark() if mark else 0
+
+    def _commands(self, mark: int) -> list[dict[str, Any]]:
+        """Shell commands the runner executed since ``mark`` (shown on the ticket timeline)."""
+        since = getattr(self.runner, "commands_since", None)
+        commands = since(mark) if since else []
+        return commands[-MAX_RECORDED_COMMANDS:]
+
     async def _run_for(self, ticket_id: str) -> SandboxRun:
         await self._ensure_ticket(ticket_id)
         run = await self.db.latest_sandbox_run(ticket_id)
@@ -156,6 +168,7 @@ class SandboxManager:
         run = await self._run_for(ticket_id)
         branch = self.branch_for(ticket_id)
         async with self._lock:
+            mark = self._mark()
             if self.active_ticket != ticket_id:
                 await self._ensure_up(run)
             result: PatchResult = await self.runner.apply_patch_in_sandbox(
@@ -163,11 +176,12 @@ class SandboxManager:
             if result.applied:
                 await self.runner.sandbox_up(branch)  # rebuild the sandbox containers from the fix branch
                 run = await self.db.update_sandbox_run(run.id, patch_ref=branch, after=None, tests=None, passed=None)
+            commands = self._commands(mark)
         flags = diffcheck.risk_flags(diff) if result.applied else RiskFlags()
         await self._event(ticket_id, Actor.engineer, EventType.finding, {
             "tool": tool, "applied": result.applied, "branch": result.branch, "commit": result.commit_sha,
-            "files_changed": result.files_changed, "error": result.error, "risk_flags": flags.model_dump(),
-            "diff": diff[:RECORDED_DIFF_CHARS], "diff_truncated": len(diff) > RECORDED_DIFF_CHARS})
+            "files_changed": result.files_changed, "stat": result.stat, "error": result.error, "risk_flags": flags.model_dump(),
+            "diff": diff[:RECORDED_DIFF_CHARS], "diff_truncated": len(diff) > RECORDED_DIFF_CHARS, "commands": commands})
         out = {"evidence_ref": f"sandbox:{run.id}:patch:{result.commit_sha or 'rejected'}", **result.as_dict(),
                "patch_ref": branch if result.applied else None, "risk_flags": flags.model_dump(), "sandbox_run_id": run.id,
                "diff": diff}
@@ -215,12 +229,15 @@ class SandboxManager:
     async def run_tests(self, ticket_id: str) -> dict[str, Any]:
         run = await self._run_for(ticket_id)
         async with self._lock:
+            mark = self._mark()
             if self.active_ticket != ticket_id:
                 await self._ensure_up(run)
             tests: TestRunResult = await self.runner.sandbox_tests()
             run = await self.db.update_sandbox_run(run.id, tests=tests)
+            commands = self._commands(mark)
         await self._event(ticket_id, Actor.engineer, EventType.finding, {
-            "tool": "run_tests", "passed": tests.passed, "failed": tests.failed, "total": tests.total, "ref": run.patch_ref or run.base_sha})
+            "tool": "run_tests", "passed": tests.passed, "failed": tests.failed, "total": tests.total, "ref": run.patch_ref or run.base_sha,
+            "command": tests.command, "output": tests.output_tail[-RECORDED_OUTPUT_CHARS:], "commands": commands})
         return {"evidence_ref": f"sandbox:{run.id}:tests", "sandbox_run_id": run.id, "ref": run.patch_ref or run.base_sha,
                 **tests.model_dump()}
 
@@ -228,6 +245,7 @@ class SandboxManager:
         run = await self._run_for(ticket_id)
         n = requests or self.settings.loadtest_requests
         async with self._lock:
+            mark = self._mark()
             if self.active_ticket != ticket_id:
                 await self._ensure_up(run)
             metrics = await self.runner.sandbox_loadtest(n)
@@ -238,9 +256,10 @@ class SandboxManager:
                 run = await self.db.update_sandbox_run(run.id, before=metrics, reproduced=bool(breaches))
             else:
                 run = await self.db.update_sandbox_run(run.id, after=metrics)
+            commands = self._commands(mark)
         await self._event(ticket_id, Actor.engineer, EventType.finding, {
             "tool": "run_loadtest", "phase": phase, "requests": n, "error_rate_pct": metrics.error_rate_pct,
-            "p95_ms": metrics.p95_ms, "breaches": breaches})
+            "p95_ms": metrics.p95_ms, "breaches": breaches, "commands": commands})
         return {"evidence_ref": f"sandbox:{run.id}:loadtest:{phase}", "sandbox_run_id": run.id, "phase": phase,
                 "ref": run.patch_ref or run.base_sha, "metrics": metrics.model_dump(), "breaches": breaches,
                 "baseline": run.baseline, "thresholds": thresholds, "incident_present": bool(breaches)}

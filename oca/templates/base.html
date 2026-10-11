@@ -20,7 +20,7 @@
       <li><a href="{{ href }}" {% if path.startswith(href) %}aria-current="page"{% endif %}><span class="nav-symbol" aria-hidden="true">{{ symbol }}</span>{{ label }}</a></li>
       {% endfor %}
     </ul>
-    <div class="sidebar-footer"><div class="local-note"><span class="status-dot"></span>Local inference</div><div class="account-row"><span class="avatar" aria-hidden="true">A</span><span>Local account</span></div><form method="post" action="/logout"><button class="logout-button">Sign out</button></form></div>
+    <div class="sidebar-footer"><div class="local-note"><span class="status-dot"></span>Local inference</div><div class="account-row"><span class="avatar" aria-hidden="true">A</span><span>Local account</span></div><form method="post" action="/logout"><button class="logout-button">Sign out</button></form><form method="post" action="/shutdown" onsubmit="return confirm('Shut down the OCA server? Running pipelines stop; production and the sandbox are left as they are.')"><button class="logout-button danger" title="Stop the OCA server process">Shut down</button></form></div>
     {% endif %}
   </nav>
   <main id="main-content" class="main-content">{% block content %}{% endblock %}<footer class="page-footer">OCA <span>·</span> Local incident response</footer></main>

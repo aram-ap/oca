@@ -118,3 +118,18 @@ nav .nav-links a[aria-current="page"] { background: #eaf4f0; color: #176b57; fon
   .sidebar-footer .local-note, .sidebar-footer .account-row { display: none; }
   .sidebar-footer .logout-button { margin: 0; padding: 5px 10px; }
 }
+
+/* diffs and command logs on the ticket timeline */
+pre.diff { white-space: pre; }
+pre.diff .d-add { color: #1e7e34; background: rgba(30,126,52,.08); display: inline-block; min-width: 100%; }
+pre.diff .d-del { color: #b02a37; background: rgba(176,42,55,.08); display: inline-block; min-width: 100%; }
+pre.diff .d-hunk { color: #6f42c1; }
+pre.diff .d-file { color: #526575; font-weight: 600; }
+details.diff-block > summary, details.commands > summary { cursor: pointer; font-size: .8rem; color: var(--pico-muted-color); }
+.cmd-list { list-style: none; padding: 0; margin: .3rem 0 0; font-size: .76rem; }
+.cmd-list li { padding: .1rem 0; border-bottom: 1px dotted rgba(128,128,128,.25); }
+.cmd-list li.bad code { color: #b02a37; }
+.cmd-list code, code.cmd { white-space: pre-wrap; word-break: break-all; font-size: .76rem; }
+.change { margin: 0 0 .6rem; }
+.change + .change { border-top: 1px solid rgba(128,128,128,.2); padding-top: .5rem; }
+.logout-button.danger { color: #b02a37; }

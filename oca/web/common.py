@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi import HTTPException, Request
 from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
+from markupsafe import Markup, escape
 
 from oca.auth import Principal, session_principal
 from oca.tz import COMMON_TIMEZONES, set_timezone  # noqa: F401 - re-exported for the web layer
@@ -59,7 +60,25 @@ def _pretty(value) -> str:
     return json.dumps(value, indent=2, default=str)
 
 
-TEMPLATES.env.filters.update({"ts": _fmt_ts, "dt": _fmt_dt, "duration": _duration, "pretty": _pretty})
+def _diff_html(text) -> Markup:
+    """A unified diff as a <pre> with one coloured span per line (content is escaped)."""
+    rows = []
+    for line in str(text or "").splitlines():
+        if line.startswith(("+++", "---", "diff ", "index ")):
+            cls = "file"
+        elif line.startswith("@@"):
+            cls = "hunk"
+        elif line.startswith("+"):
+            cls = "add"
+        elif line.startswith("-"):
+            cls = "del"
+        else:
+            cls = "ctx"
+        rows.append(f'<span class="d-{cls}">{escape(line)}</span>')
+    return Markup('<pre class="diff">' + "\n".join(rows) + "</pre>")
+
+
+TEMPLATES.env.filters.update({"ts": _fmt_ts, "dt": _fmt_dt, "duration": _duration, "pretty": _pretty, "diff_html": _diff_html})
 
 
 def web_user(request: Request) -> Principal:
