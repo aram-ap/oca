@@ -169,6 +169,7 @@ class FakeRunner:
         self.sha = BASELINE_SHA
         self.worse = False
         self.partial = False
+        self.stale_reads = 0  # production reads that still report the old state after a deploy
         self.migrations: set[str] = {"001_baseline.sql"}
         self.commits: list[GitCommit] = [GitCommit(BASELINE_SHA, "ops <ops@driftwood.coffee>",
                                                    (_now() - timedelta(days=3)).isoformat(), "Baseline v1.3.0")]
@@ -249,7 +250,11 @@ class FakeRunner:
             data = self._status_dict(incident)
             version, sha = state.get("version", self.version), self.sandbox["sha"]
         else:
-            data = self._status_dict(self._effective_incident(), self.worse)
+            incident = self._effective_incident()
+            if self.stale_reads > 0 and incident is None and self.incident:
+                self.stale_reads -= 1  # the detector's 1-minute window still shows the incident just after a deploy
+                incident = self.incident
+            data = self._status_dict(incident, self.worse)
             version, sha = self.version, self.sha
         return StatusSnapshot.from_json({**data, "ts": _now().isoformat(), "version": version, "git_sha": sha})
 
@@ -516,6 +521,7 @@ class FakeRunner:
         b = self.branches[branch]
         self.worse = "deploy_makes_worse" in self.failure_modes
         self.partial = "deploy_partially_helps" in self.failure_modes
+        self.stale_reads = 3 if "deploy_stale_window" in self.failure_modes else 0  # two monitor reads plus the first verify
         if not self.partial:  # a partial deploy relieves production without clearing the incident
             self.config.update(b["config"])
             self.migrations |= b["migrations"]
@@ -527,6 +533,7 @@ class FakeRunner:
             raise RunnerError("ops/deploy.sh failed", rc=1)
         self.worse = "deploy_makes_worse" in self.failure_modes
         self.partial = "deploy_partially_helps" in self.failure_modes
+        self.stale_reads = 3 if "deploy_stale_window" in self.failure_modes else 0  # two monitor reads plus the first verify
         if not self.partial:
             self.config[key] = value
         return self._record(f"set {key}={value} ({note})", ["services/orders-api/config/app.env"], note)

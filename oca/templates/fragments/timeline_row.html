@@ -58,7 +58,7 @@
     <strong>Operator {{ {"approve": "approved", "deny": "denied", "confirm": "confirmed the held deployment", "roll back": "rolled the held deployment back"}.get(p.decision, p.decision) }}</strong>{% if p.override %} (override of a denied action){% endif %}{% if p.note %}: {{ p.note }}{% endif %}
   {% elif e.type.value == "run" %}
     <strong>{{ p.stage | replace("_"," ") }}</strong>{% if p.pct is defined %} · {{ p.pct }}%{% endif %}
-    {% if p.stage == "verify" %} run {{ p.run }}/{{ p.of }} {{ "✓" if p.ok else "✗" }} {{ p.detail }}{% elif p.stage == "monitor" %} {{ "✓" if p.ok else "✗" }} {{ p.detail }}{% elif p.stage == "snapshot" %} backup <code>{{ p.backup_ref }}</code>{% elif p.stage == "auto_restore" %} <span class="badge bad">{{ p.reason }}</span>{% elif p.stage == "hold" %} <span class="badge status-awaiting_verification">held</span> {{ p.reason }}{% endif %}
+    {% if p.stage == "verify" %} run {{ p.run }}/{{ p.of }} {{ "✓" if p.ok else "✗" }} {{ p.detail }}{% elif p.stage == "monitor" %} {{ "✓" if p.ok else "✗" }} {{ p.detail }}{% elif p.stage == "snapshot" %} backup <code>{{ p.backup_ref }}</code>{% elif p.stage == "auto_restore" %} <span class="badge bad">{{ p.reason }}</span>{% elif p.stage == "hold" %} <span class="badge status-awaiting_verification">held</span> {{ p.reason }}{% elif p.stage == "settle" %} <span class="muted">waiting {{ p.seconds }} s for the 1-minute metric window to clear</span>{% endif %}
   {% elif e.type.value == "resolved" %}
     <strong>INCIDENT RESOLVED</strong> via {{ p.deployment_id }}
     {% set m = p.mttr %}

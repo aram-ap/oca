@@ -96,6 +96,7 @@ class Settings:
     stage_delay_s: float = 3.0
     verify_runs: int = 3
     verify_interval_s: float = 10.0
+    verify_settle_s: float = 60.0  # the detector's rate windows are 1 minute: wait for pre-deploy samples to age out
     max_attempts: int = 2
     loadtest_requests: int = 2000
     autostart_pipeline: bool = True
@@ -165,6 +166,7 @@ class Settings:
             stage_delay_s=float(get("STAGE_DELAY_S", str(defaults.stage_delay_s))),
             verify_runs=int(get("VERIFY_RUNS", str(defaults.verify_runs))),
             verify_interval_s=float(get("VERIFY_INTERVAL_S", str(defaults.verify_interval_s))),
+            verify_settle_s=float(get("VERIFY_SETTLE_S", str(defaults.verify_settle_s))),
             max_attempts=int(get("MAX_ATTEMPTS", str(defaults.max_attempts))),
             loadtest_requests=int(get("LOADTEST_REQUESTS", str(defaults.loadtest_requests))),
             autostart_pipeline=_bool(get("AUTOSTART_PIPELINE", "true")),

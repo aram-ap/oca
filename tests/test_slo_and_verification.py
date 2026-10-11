@@ -126,3 +126,23 @@ async def test_each_prepare_starts_from_a_clean_fix_branch_and_validate_reports_
     assert changes["config_changes"] == {"DB_TIMEOUT_MS": "3000"} and len(changes["files"]) == 2
     event = [e for e in await app.state.db.list_events(ticket.id) if e.type is EventType.sandbox_result][-1]
     assert event.payload["changes"] == changes
+
+
+
+async def test_a_stale_first_read_after_deploy_does_not_fail_verification(app, client, auth):
+    """The detector's 1-minute window still shows the incident right after the deploy; N consecutive healthy reads resolve."""
+    await app.state.db.set_setting("require_human_approval", False)
+    ticket = await detect(app)
+    run = await prove(client, auth, ticket.id)
+    await client.post(f"/api/tickets/{ticket.id}/events", json={"type": "review", "payload": {"review": REVIEW_OK}}, headers=auth(Role.guardian))
+    app.state.runner.failure_modes.add("deploy_stale_window")
+    request = {"action": "set_config", "args": {"service": "orders-api", "key": "DB_TIMEOUT_MS", "value": 3000},
+               "ticket_id": ticket.id, "evidence": {"sandbox_run_id": run["id"], "risk_score": 8, "guardian_decision": "APPROVE"}}
+    await client.post("/api/actions", json=request, headers=auth(Role.orchestrator))
+    dep_id = (await client.get(f"/api/tickets/{ticket.id}", headers=auth(Role.admin))).json()["current_deployment_id"]
+    await app.state.executor.wait(dep_id)
+    final = (await client.get(f"/api/tickets/{ticket.id}", headers=auth(Role.admin))).json()
+    assert final["status"] == "resolved"
+    verify = [e["payload"] for e in final["events"] if e["type"] == "run" and e["payload"]["stage"] == "verify"]
+    assert [v["ok"] for v in verify] == [False, True, True]  # one stale read, then the two consecutive passes required
+    assert not any(e["type"] == "run" and e["payload"]["stage"] in ("hold", "auto_restore") for e in final["events"])

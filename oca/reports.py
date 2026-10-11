@@ -26,7 +26,7 @@ from oca.schemas import (
 log = logging.getLogger("oca.reports")
 
 WRITE_TOOLS = ("set_config", "create_migration", "apply_patch")
-TIMELINE_STAGES = ("snapshot", "canary", "widen", "full", "verify", "monitor", "auto_restore", "hold")
+TIMELINE_STAGES = ("snapshot", "canary", "widen", "full", "verify", "monitor", "auto_restore", "hold", "settle")
 DECISIONS = {"approve": "approved", "deny": "denied", "confirm": "confirmed the held deployment", "roll back": "rolled the held deployment back"}
 REPORT_DELAY_S = 1.0  # terminal status_change and its `resolved`/`rolled_back` event arrive back to back
 
@@ -212,6 +212,8 @@ def build_report(ticket: Ticket, events: list[TicketEvent], mttr: MTTR | None, d
                 line = f"automatic restore: {p.get('reason')}"
             elif stage == "hold":
                 line = f"**held for human verification**: {p.get('reason')}"
+            elif stage == "settle":
+                line = f"waiting {p.get('seconds')} s for the detector's metric window to clear before verifying"
             else:
                 line = f"deployment stage `{stage}`" + (f" ({p['pct']}%)" if p.get("pct") is not None else "")
         elif e.type is EventType.resolved:

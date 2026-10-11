@@ -123,7 +123,7 @@ class Executor:
         return dep
 
     async def _verify(self, dep: Deployment, ticket, pre: dict[str, float] | None = None) -> dict[str, Any]:
-        """Three outcomes: ok (healthy N times), worse (regression vs. just before the deploy), or improved-but-breaching.
+        """Three outcomes: ok (healthy N times in a row), worse (regression vs. just before the deploy), or improved-but-breaching.
 
         Under external load a correct fix may not bring production inside its SLOs; rolling it back
         for that alone would undo an improvement. A regression is still reverted automatically.
@@ -132,19 +132,27 @@ class Executor:
         pre = pre or {}
         detect_error = float((ticket.metrics_at_detect or {}).get("error_rate_pct", 0.0)) if ticket else 0.0
         worse = False
-        for i in range(self.settings.verify_runs):
+        if self.settings.verify_settle_s > 0:
+            # The detector's series are 1-minute rates: read too early they still contain pre-deploy samples.
+            await self._stage(dep, "settle", 100, seconds=self.settings.verify_settle_s)
+            await asyncio.sleep(self.settings.verify_settle_s)
+        needed, streak, max_runs = self.settings.verify_runs, 0, self.settings.verify_runs * 2
+        for i in range(max_runs):
             if i:
                 await asyncio.sleep(self.settings.verify_interval_s)
             result = await self._check()
+            streak = streak + 1 if result.ok else 0
             runs.append({"run": i + 1, "ok": result.ok, "metrics": result.metrics, "detail": result.detail,
                          "breaches": result.breaches})
-            await self._stage(dep, "verify", 100, run=i + 1, of=self.settings.verify_runs, ok=result.ok,
+            await self._stage(dep, "verify", 100, run=i + 1, of=needed, ok=result.ok,
                               metrics=result.metrics, detail=result.detail)
             if not result.ok and ((detect_error and result.metrics.get("error_rate_pct", 0.0) > detect_error)
                                   or self._regressed(result, pre)):
                 worse = True
                 break
-        ok = bool(runs) and all(r["ok"] for r in runs)
+            if streak >= needed:
+                break  # N consecutive healthy reads; a single stale read earlier does not count against the fix
+        ok = streak >= needed
         improved = (not ok and not worse and bool(pre) and bool(runs) and self._improved(runs[-1]["metrics"], pre))
         return {"ok": ok, "worse": worse, "improved": improved, "runs": runs, "pre_deploy": pre}
 
