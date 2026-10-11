@@ -68,7 +68,7 @@ class Pipeline:
             try:
                 orchestrator = self.build_orchestrator()
                 result = await orchestrator.run_ticket(ticket_id)
-                log.info("pipeline for %s finished: %s", ticket_id, result)
+                log.info("pipeline for %s finished: %s (%s)", ticket_id, result.status, result.reason)
             except Exception as exc:  # noqa: BLE001 - record and leave the ticket for a human
                 log.exception("pipeline for %s crashed", ticket_id)
                 try:

@@ -80,7 +80,7 @@ The last line exists so the panel stays honest when an external ticketing system
 
 ## 3. System architecture
 
-The agent code lives in the top-level `models/` Python package (stdlib only); the platform lives in `oca/` (FastAPI); the company under test, Driftwood, lives in **its own git repository** that OCA reaches through `OCA_FAKECO_ROOT` (the copy under `fakeco/driftwood/` is a reference snapshot; its ops scripts need their own repo with a `baseline` tag and the incident branches).
+The agent code lives in the top-level `models/` Python package (stdlib only); the platform lives in `oca/` (FastAPI); the company under test, Driftwood, lives in **its own git repository** that OCA reaches through `OCA_FAKECO_ROOT` (its ops scripts need their own repo with a `baseline` tag and the incident branches; it was moved out of this tree).
 
 ```text
                     ASUS ASCENT GX10 (GB10 · 128 GB unified memory)
@@ -707,7 +707,7 @@ An earlier design proposed two concurrent request slots (Investigator + Guardian
 
 ## 9. Fake company (`fakeco/`)
 
-The infrastructure OCA monitors: **Driftwood Coffee Co.**, a miniature company in Docker Compose. It lives in its own git repository (teammates maintain it); `fakeco/driftwood/` here is a reference snapshot, and OCA points at the real clone with `OCA_FAKECO_ROOT`. Its own README documents it in full; the parts OCA relies on:
+The infrastructure OCA monitors: **Driftwood Coffee Co.**, a miniature company in Docker Compose. It lives in its own git repository (teammates maintain it); OCA points at a clone of it with `OCA_FAKECO_ROOT`. Its own README documents it in full; the parts OCA relies on:
 
 ```
 loadgen (~30 visits/s) ─▶ frontend nginx :8080 ──/api──▶ orders-api FastAPI :8000 ──▶ postgres :5432 (2M orders)
@@ -769,7 +769,6 @@ oca/                               # repository root
 ├── requirements.txt               # single root requirements for oca/ (models/ needs nothing beyond the stdlib)
 ├── pyproject.toml                 # pytest config (tests/ + models/tests/)
 ├── .env.example                   # every OCA_* setting
-├── fakeco/driftwood/              # reference snapshot of the demo company (its own repo is what OCA runs against)
 ├── models/                        # AI subsystem — stdlib only, never imports oca/
 │   ├── config.py                  # ModelConfig from OCA_* env; tiny .env loader
 │   ├── core/{llm,agent,tool_registry,state}.py
@@ -826,7 +825,7 @@ Run everything from the repo root: `python3 -m oca.main` (server), `python3 -m m
 
 **AI subsystem (`models/`):** Ollama client, bounded agent loop, role prompts, tool clients, agent state, the three agents, orchestration.
 
-**Platform (`oca/`):** API, database, dashboard, health checks, gate, backup, executor, sandbox, runner abstraction, Jira integration, optional Slack. **Driftwood** lives in its own repository.
+**Platform (`oca/`):** API, database, dashboard, health checks, gate, backup, executor, sandbox, runner abstraction, Jira integration, optional Slack. **Driftwood** lives in its own repository (moved out of this tree on 2026-10-10).
 
 Both tracks share the agent output contracts: `models/core/state.py` is the source of truth and `oca/schemas.py` mirrors it (`tests/test_contracts.py`). Tool argument shapes are fixed by `models/tools/catalog.py`.
 
@@ -879,7 +878,7 @@ Recorded so nobody re-litigates them by accident. Any can be overturned by the t
 | **D7** | **Naming.** Top-level `models/` is the agent package; the platform package is `oca/` with contracts in `oca/schemas.py`. One root `requirements.txt`. All settings are `OCA_*` environment variables.               |
 | **D8** | **External ticketing is mirror-only and policy-filtered.** Jira/Slack never hold evidence and never receive logs, code, diffs, or metrics. Outbound text is templated from whitelisted fields; `outbound_detail` defaults to `minimal` for Jira Cloud, `summary` for self-hosted. Delivery goes through a retrying outbox so an unreachable Jira never blocks the pipeline. Approve/deny is dashboard-only; Jira comments are never instructions. |
 | **D9** | **The platform conforms to the agent contracts.** `models/` is stdlib-only and never imports `oca/`; `oca/schemas.py` mirrors `models/core/state.py` and `/api/tools/*` accepts exactly the shapes in `models/tools/catalog.py`. A test enforces parity. |
-| **D10** | **One runner seam.** Everything that touches the company under test goes through `FakecoRunner`: `SubprocessRunner` wraps driftwood's own ops scripts in its standalone clone (`OCA_FAKECO_ROOT`); `FakeRunner` models both incidents deterministically so the pipeline, tests and demo run without Docker. OCA never modifies `fakeco/driftwood/`. |
+| **D10** | **One runner seam.** Everything that touches the company under test goes through `FakecoRunner`: `SubprocessRunner` wraps driftwood's own ops scripts in its standalone clone (`OCA_FAKECO_ROOT`); `FakeRunner` models both incidents deterministically so the pipeline, tests and demo run without Docker. Driftwood's repo is never modified by OCA. |
 | **D11** | **Server-measured evidence only.** The sandbox manager records BEFORE/AFTER metrics and test results itself; the gate reloads the sandbox run and the Guardian review from the database and ignores the evidence block's values. Diffs are validated and applied server-side on `fix/<ticket>`. |
 
 ---
@@ -898,6 +897,6 @@ Recorded so nobody re-litigates them by accident. Any can be overturned by the t
 
 ## Implementation notes
 
-- **Done (2026-10-10):** `oca/` platform — contracts, SQLite layer, `/api` with per-token scoping, health checks + scheduler, SSE timeline, command gate + allowlist, sandbox manager, backup, staged executor with auto-restore, in-process pipeline, dashboard; `oca/fakeco/` runner seam with a deterministic `FakeRunner` and the real `SubprocessRunner`. `models/` — Ollama client, registry, bounded loop, three agents, tool catalog, orchestrator, `--ticket` CLI. 64 tests (`python3 -m pytest`), no Docker or GPU required.
+- **Done (2026-10-10):** `oca/` platform — contracts, SQLite layer, `/api` with per-token scoping, health checks + scheduler, SSE timeline, command gate + allowlist, sandbox manager, backup, staged executor with auto-restore, in-process pipeline, dashboard; `oca/fakeco/` runner seam with a deterministic `FakeRunner` and the real `SubprocessRunner`. `models/` — Ollama client, registry, bounded loop, three agents, tool catalog, orchestrator (with the Guardian evidence audit, total deadline and duplicate-run guard from the parallel orchestrator work), `--ticket` CLI. 64 tests (`python3 -m pytest`), no Docker or GPU required.
 - **Verified live:** Nemotron native tool calling on the GX10; the full pipeline on a Mac with `gpt-oss:latest` over the dry runner (`INC-0001` detected → correct diagnosis → one-line fix proven in the sandbox → Guardian APPROVE risk 10 → gate green → awaiting approval in 66 s).
 - **Pending:** real-mode run on the GX10 against the standalone driftwood clone (`OCA_RUNNER=real OCA_FAKECO_ROOT=…`; the box needs the `docker` group for `asus` and `pip install -r requirements.txt`); M5 Jira integration (`oca/integrations/`); Chart.js metrics charts; A8 profiling and concurrency benchmark.

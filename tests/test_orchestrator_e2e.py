@@ -77,12 +77,13 @@ async def test_agents_drive_ticket_to_awaiting_approval_then_human_resolves(app,
                               call("run_tests", ticket_id=ticket_id), final(PATCH)),
             api_client=tools(Role.engineer), on_observation=orchestrator.observer),
         "guardian": Guardian(
-            llm=ScriptedModel(call("get_diff", ticket_id=ticket_id), call("get_sandbox_results", ticket_id=ticket_id), final(REVIEW)),
+            llm=ScriptedModel(call("get_diff", ticket_id=ticket_id), call("get_test_results", ticket_id=ticket_id),
+                              call("get_sandbox_results", ticket_id=ticket_id), final(REVIEW)),
             api_client=tools(Role.guardian), on_observation=orchestrator.observer),
     }
 
-    status = await orchestrator.run_ticket(ticket_id)
-    assert status == "awaiting_approval"
+    result = await orchestrator.run_ticket(ticket_id)
+    assert result.status == "awaiting_approval" and result.submitted and result.action_request["action"] == "set_config"
 
     view = (await client.get(f"/api/tickets/{ticket_id}", headers=auth(Role.admin))).json()
     assert view["status"] == "awaiting_approval"

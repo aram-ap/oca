@@ -5,7 +5,7 @@ import unittest
 
 from models.core.agent import AgentError
 from models.core.state import AgentResult, Observation
-from models.orchestrator import Orchestrator, config_change
+from models.orchestrator import Orchestrator, PipelineResult, config_change
 from models.tools.client import ToolAPIError
 
 REVERT = "--- a/services/orders-api/config/app.env\n+++ b/services/orders-api/config/app.env\n@@ -3 +3 @@\n-DB_TIMEOUT_MS=100\n+DB_TIMEOUT_MS=3000\n"
@@ -49,30 +49,50 @@ class FakePlatform:
         return [b for m, p, b in self.calls if p.endswith("/events") and (type_ is None or b["type"] == type_)]
 
 
+def guardian_evidence(run_id="SBX-0001", patch_ref="fix/INC-0001", tests_passed=True, passed=True):
+    """Observations a diligent Guardian produces: server evidence for this exact run and patch."""
+    return [
+        Observation("get_diff", {"ticket_id": "INC-0001"}, {"sandbox_run_id": run_id, "patch_ref": patch_ref, "diff": REVERT}, True),
+        Observation("get_test_results", {"ticket_id": "INC-0001"}, {"sandbox_run_id": run_id, "patch_ref": patch_ref,
+                                                                    "tests": {"passed": tests_passed}}, True),
+        Observation("get_sandbox_results", {"ticket_id": "INC-0001"}, {"id": run_id, "patch_ref": patch_ref,
+                                                                       "reproduced": True, "passed": passed}, True),
+    ]
+
+
 class Canned:
     """Agent stand-in: returns scripted outputs (or raises) in order."""
 
-    def __init__(self, *outputs):
+    def __init__(self, *outputs, observations=None):
         self.outputs = list(outputs)
         self.contexts = []
+        self.observations = observations
 
     async def run(self, context):
         self.contexts.append(context)
         item = self.outputs.pop(0)
         if isinstance(item, Exception):
             raise item
-        return AgentResult("x", item, 2, [Observation("get_logs", {}, {"evidence_ref": "logs:1"}, True)])
+        observations = self.observations if self.observations is not None else [
+            Observation("get_logs", {}, {"evidence_ref": "logs:1"}, True)]
+        return AgentResult("x", item, 2, list(observations))
 
 
-def orchestrator(platform, inv, eng, guard, attempts=2):
-    return Orchestrator(platform, {"investigator": inv, "engineer": eng, "guardian": guard}, max_attempts=attempts)
+def guard(*outputs, observations=None):
+    return Canned(*outputs, observations=guardian_evidence() if observations is None else observations)
+
+
+def orchestrator(platform, inv, eng, guardian, attempts=2, **limits):
+    return Orchestrator(platform, {"investigator": inv, "engineer": eng, "guardian": guardian}, max_attempts=attempts, **limits)
 
 
 class OrchestratorTests(unittest.IsolatedAsyncioTestCase):
     async def test_happy_path_submits_set_config(self):
         platform = FakePlatform(validations=[True])
-        status = await orchestrator(platform, Canned(DIAG), Canned(PATCH), Canned(APPROVE)).run_ticket("INC-0001")
-        self.assertEqual(status, "awaiting_approval")
+        result = await orchestrator(platform, Canned(DIAG), Canned(PATCH), guard(APPROVE)).run_ticket("INC-0001")
+        self.assertIsInstance(result, PipelineResult)
+        self.assertEqual((result.status, result.attempts, result.submitted), ("awaiting_approval", 1, True))
+        self.assertEqual(result.gate_response["reason"], "policy passed")
         self.assertEqual(platform.statuses(), ["investigating", "fix_proposed", "sandbox_validated", "reviewed"])
         self.assertEqual([e["type"] for e in platform.events()], ["diagnosis", "patch", "review"])
         self.assertEqual(platform.events("diagnosis")[0]["actor"], "investigator")
@@ -85,8 +105,8 @@ class OrchestratorTests(unittest.IsolatedAsyncioTestCase):
     async def test_code_patch_submits_deploy_patch_and_feeds_feedback(self):
         platform = FakePlatform(validations=[False, True])
         eng = Canned(dict(PATCH, diff=CODE), dict(PATCH, diff=CODE))
-        status = await orchestrator(platform, Canned(DIAG), eng, Canned(APPROVE)).run_ticket("INC-0001")
-        self.assertEqual(status, "awaiting_approval")
+        result = await orchestrator(platform, Canned(DIAG), eng, guard(APPROVE)).run_ticket("INC-0001")
+        self.assertEqual(result.status, "awaiting_approval")
         self.assertEqual(len(eng.contexts), 2)
         self.assertIn("Sandbox validation failed", eng.contexts[1]["feedback"][0])
         action = [b for m, p, b in platform.calls if p == "/api/actions"][0]
@@ -96,19 +116,19 @@ class OrchestratorTests(unittest.IsolatedAsyncioTestCase):
     async def test_needs_testing_loops_engineer_then_approves(self):
         platform = FakePlatform(validations=[True, True])
         needs = dict(APPROVE, decision="NEEDS_TESTING", policy_concerns=["no checkout test"])
-        guard = Canned(needs, APPROVE)
+        guardian = guard(needs, APPROVE)
         eng = Canned(PATCH, PATCH)
-        status = await orchestrator(platform, Canned(DIAG), eng, guard).run_ticket("INC-0001")
-        self.assertEqual(status, "awaiting_approval")
-        self.assertEqual(len(guard.contexts), 2)
+        result = await orchestrator(platform, Canned(DIAG), eng, guardian).run_ticket("INC-0001")
+        self.assertEqual(result.status, "awaiting_approval")
+        self.assertEqual(len(guardian.contexts), 2)
         self.assertIn("Guardian requested more testing", eng.contexts[1]["feedback"][0])
 
     async def test_reject_and_agent_errors_exhaust_attempts(self):
         platform = FakePlatform(validations=[True, True])
         reject = dict(APPROVE, decision="REJECT", justification="wrong fix")
         inv = Canned(DIAG, AgentError("investigator exhausted its 12 steps"))
-        status = await orchestrator(platform, inv, Canned(PATCH, PATCH), Canned(reject, reject)).run_ticket("INC-0001")
-        self.assertEqual(status, "failed")
+        result = await orchestrator(platform, inv, Canned(PATCH, PATCH), guard(reject, reject)).run_ticket("INC-0001")
+        self.assertEqual((result.status, result.submitted), ("failed", False))
         self.assertEqual(platform.statuses()[-1], "failed")
         final = platform.events("error")[-1]["payload"]
         self.assertIn("REJECT", final["attempts"][0])
@@ -118,14 +138,96 @@ class OrchestratorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_not_reproduced_and_missing_patch(self):
         platform = FakePlatform(reproduced=False)
-        status = await orchestrator(platform, Canned(DIAG), Canned(PATCH), Canned(APPROVE), attempts=1).run_ticket("INC-0001")
-        self.assertEqual(status, "failed")
+        result = await orchestrator(platform, Canned(DIAG), Canned(PATCH), guard(APPROVE), attempts=1).run_ticket("INC-0001")
+        self.assertEqual(result.status, "failed")
         self.assertNotIn("fix_proposed", platform.statuses())
         platform = FakePlatform(validations=[])  # validate always 409: engineer never applied a patch
         eng = Canned(dict(PATCH, patch_ref="none", diff="none"), dict(PATCH, patch_ref="none", diff="none"))
-        status = await orchestrator(platform, Canned(DIAG), eng, Canned(APPROVE), attempts=1).run_ticket("INC-0001")
-        self.assertEqual(status, "failed")
+        result = await orchestrator(platform, Canned(DIAG), eng, guard(APPROVE), attempts=1).run_ticket("INC-0001")
+        self.assertEqual(result.status, "failed")
         self.assertIn("apply a patch", eng.contexts[1]["feedback"][-1])
+
+    async def test_approval_without_server_evidence_is_audited(self):
+        # A Guardian that approves without fetching evidence gets one retry with feedback, then the attempt is spent.
+        platform = FakePlatform(validations=[True])
+        lazy = Canned(APPROVE, APPROVE)  # default observations: only get_logs
+        result = await orchestrator(platform, Canned(DIAG), Canned(PATCH), lazy, attempts=1).run_ticket("INC-0001")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(platform.calls.count(("POST", "/api/actions", None)), 0)
+        self.assertTrue(all(p != "/api/actions" for m, p, b in platform.calls))
+        self.assertIn("Guardian approved without consulting", lazy.contexts[1]["feedback"][-1])
+        # Evidence for another run, failed tests, or a different patch never reaches the gate.
+        for observations in (guardian_evidence(run_id="SBX-0009"), guardian_evidence(tests_passed=False),
+                             guardian_evidence(patch_ref="fix/OTHER"), guardian_evidence(passed=False)):
+            with self.subTest(observations=[o.result for o in observations]):
+                platform = FakePlatform(validations=[True])
+                sloppy = Canned(APPROVE, APPROVE, observations=observations)
+                result = await orchestrator(platform, Canned(DIAG), Canned(PATCH), sloppy, attempts=1).run_ticket("INC-0001")
+                self.assertEqual(result.status, "failed")
+                self.assertTrue(all(p != "/api/actions" for m, p, b in platform.calls))
+        # The second, diligent review passes the audit.
+        platform = FakePlatform(validations=[True])
+        learns = Canned(APPROVE, APPROVE)
+        learns.observations = None
+        outputs = iter([[Observation("get_logs", {}, {}, True)], guardian_evidence()])
+        original = learns.run
+
+        async def run(context):
+            learns.observations = next(outputs)
+            return await original(context)
+        learns.run = run
+        result = await orchestrator(platform, Canned(DIAG), Canned(PATCH), learns, attempts=1).run_ticket("INC-0001")
+        self.assertEqual(result.status, "awaiting_approval")
+
+    async def test_invalid_agent_output_spends_the_attempt(self):
+        platform = FakePlatform(validations=[True])
+        bad = Canned(dict(DIAG, confidence=2))
+        result = await orchestrator(platform, bad, Canned(PATCH), guard(APPROVE), attempts=1).run_ticket("INC-0001")
+        self.assertEqual(result.status, "failed")
+        self.assertIn("confidence", platform.events("error")[0]["payload"]["error"])
+
+    async def test_no_replay_duplicate_guard_and_deadline(self):
+        platform = FakePlatform(validations=[True])
+        pipeline = orchestrator(platform, Canned(DIAG), Canned(PATCH), guard(APPROVE))
+        TICKET["status"] = "awaiting_approval"
+        try:
+            with self.assertRaisesRegex(ValueError, "must not run again"):
+                await pipeline.run_ticket("INC-0001")
+        finally:
+            TICKET["status"] = "detected"
+        self.assertEqual(platform.statuses(), [])
+
+        slow = FakePlatform(validations=[True])
+        entered = asyncio.Event()
+
+        async def stall(method, path, body=None):
+            entered.set()
+            await asyncio.sleep(1)
+        slow.request = stall
+        pipeline = orchestrator(slow, Canned(DIAG), Canned(PATCH), guard(APPROVE), timeout_s=0.05)
+        task = asyncio.create_task(pipeline.run_ticket("INC-0001"))
+        await entered.wait()
+        with self.assertRaisesRegex(RuntimeError, "already running"):
+            await pipeline.run_ticket("INC-0001")
+        result = await task
+        self.assertEqual(result.status, "failed")
+        self.assertIn("deadline", result.reason)
+        self.assertEqual(pipeline._active, set())
+
+    async def test_uncertain_submission_is_not_repeated(self):
+        platform = FakePlatform(validations=[True])
+        attempts = []
+
+        async def flaky(method, path, body=None):
+            if path == "/api/actions":
+                attempts.append(body)
+                raise ToolAPIError("uncertain submission", 500, "")
+            return await FakePlatform.request(platform, method, path, body)
+        platform.request = flaky
+        from models.orchestrator import PlatformError
+        with self.assertRaises(PlatformError):
+            await orchestrator(platform, Canned(DIAG), Canned(PATCH), guard(APPROVE)).run_ticket("INC-0001")
+        self.assertEqual(len(attempts), 1)
 
     def test_config_change_detection(self):
         self.assertEqual(config_change(REVERT), ("DB_TIMEOUT_MS", 3000))

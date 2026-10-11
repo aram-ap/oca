@@ -6,9 +6,11 @@
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import sys
+from dataclasses import asdict
 
 from models.config import ModelConfig, load_dotenv
 from models.core.llm import OllamaClient, OllamaError
@@ -46,7 +48,7 @@ async def check_model(config: ModelConfig, check_tools: bool = False) -> None:
     print("Tool calling passed (synthetic health result)")
 
 
-async def run_ticket(ticket_id: str, api_url: str, max_attempts: int) -> str:
+async def run_ticket(ticket_id: str, api_url: str, max_attempts: int):
     from models.agents import Engineer, Guardian, Investigator
     from models.orchestrator import Orchestrator
     from models.tools.client import PlatformClient, ToolAPIClient
@@ -82,14 +84,14 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     try:
         if args.ticket:
-            status = asyncio.run(run_ticket(args.ticket, args.api_url, args.max_attempts))
-            print(f"{args.ticket}: {status}")
-            return 0 if status != "failed" else 2
+            result = asyncio.run(run_ticket(args.ticket, args.api_url, args.max_attempts))
+            print(json.dumps(asdict(result), indent=2))
+            return 0 if result.submitted else 2
         if not args.check:
             parser.error("Use --check or --ticket")
         asyncio.run(check_model(ModelConfig.from_env(), args.tools))
-    except (OllamaError, ValueError) as exc:
-        print(f"Model check failed: {exc}", file=sys.stderr)
+    except (OllamaError, ValueError, RuntimeError) as exc:
+        print(f"Run failed: {exc}", file=sys.stderr)
         return 1
     return 0
 
