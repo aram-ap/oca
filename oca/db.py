@@ -169,6 +169,13 @@ class Database:
                               (service,))
         return _dt(row["t"]) if row and row["t"] else None
 
+    async def find_ticket_by_external_ref(self, system: str, key: str) -> Ticket | None:
+        """The ticket created from an external system's ticket (e.g. Jira KAN-7), if any."""
+        row = await self._one(
+            "SELECT * FROM tickets WHERE json_extract(external_ref, '$.system') = ? "
+            "AND json_extract(external_ref, '$.key') = ? ORDER BY created_at DESC LIMIT 1", (system, key))
+        return self._ticket(row) if row else None
+
     _TICKET_COLUMNS = frozenset({"title", "severity", "description", "resolved_at", "metrics_before",
                                  "metrics_at_detect", "external_ref", "attempt", "current_deployment_id",
                                  "pending_action_id", "status"})
@@ -483,8 +490,17 @@ class Database:
         return row[0]
 
     async def due_outbox(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Pending messages whose retry time has come, oldest first.
+
+        Messages for one ticket and target go out in order: a message waits while an
+        earlier one for the same ticket and target is still pending (for example a
+        Slack update waits for the message that starts its thread).
+        """
         rows = await self._all(
-            "SELECT * FROM integration_outbox WHERE status = 'pending' AND next_attempt <= ? ORDER BY id LIMIT ?",
+            "SELECT o.* FROM integration_outbox o WHERE o.status = 'pending' AND o.next_attempt <= ? "
+            "AND NOT EXISTS (SELECT 1 FROM integration_outbox p WHERE p.ticket_id = o.ticket_id "
+            "AND p.target = o.target AND p.status = 'pending' AND p.id < o.id) "
+            "ORDER BY o.id LIMIT ?",
             (_iso(utcnow()), limit))
         return [{**dict(r), "payload": _load(r["payload"], {})} for r in rows]
 
@@ -503,6 +519,20 @@ class Database:
             "SUM(bytes_sent) AS bytes_sent FROM integration_outbox GROUP BY target")
         return {r["target"]: {"pending": r["pending"] or 0, "failed": r["failed"] or 0,
                               "bytes_sent": r["bytes_sent"] or 0} for r in rows}
+
+    # ---------------------------------------------------------- integration links
+
+    async def get_link(self, ticket_id: str, target: str) -> dict[str, Any] | None:
+        row = await self._one("SELECT ref FROM integration_links WHERE ticket_id = ? AND target = ?",
+                              (ticket_id, target))
+        return _load(row["ref"], {}) if row else None
+
+    async def set_link(self, ticket_id: str, target: str, ref: dict[str, Any]) -> None:
+        async with self._lock:
+            await self.conn.execute(
+                "INSERT INTO integration_links(ticket_id, target, ref, updated_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(ticket_id, target) DO UPDATE SET ref = excluded.ref, updated_at = excluded.updated_at",
+                (ticket_id, target, _dump(ref), _iso(utcnow())))
 
     async def total_bytes_sent(self) -> int:
         row = await self._one("SELECT COALESCE(SUM(bytes_sent), 0) AS b FROM integration_outbox")

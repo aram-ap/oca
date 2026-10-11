@@ -90,6 +90,19 @@ class Settings:
     loadtest_requests: int = 2000
     autostart_pipeline: bool = True
     allowlist_path: Path = Path(__file__).with_name("allowlist.yaml")
+    # Ticketing integrations. Credentials come only from the environment (.env), never the
+    # database or git, and are kept out of repr() so they cannot leak into logs.
+    public_url: str = ""                       # dashboard address used in links sent to Jira/Slack
+    integrations_tick_s: float = 1.0           # how often the outbox sender looks for due messages
+    slack_bot_token: str = field(default="", repr=False)
+    jira_url: str = ""
+    jira_email: str = field(default="", repr=False)
+    jira_api_token: str = field(default="", repr=False)
+
+    @property
+    def dashboard_url(self) -> str:
+        """Base address for links to the dashboard; falls back to the API address."""
+        return (self.public_url or self.api_url).rstrip("/")
 
     def __post_init__(self) -> None:
         if self.runner not in {"real", "dry"}:
@@ -143,6 +156,12 @@ class Settings:
             loadtest_requests=int(get("LOADTEST_REQUESTS", str(defaults.loadtest_requests))),
             autostart_pipeline=_bool(get("AUTOSTART_PIPELINE", "true")),
             allowlist_path=Path(get("ALLOWLIST_PATH", str(defaults.allowlist_path))),
+            public_url=get("PUBLIC_URL", defaults.public_url).rstrip("/"),
+            integrations_tick_s=float(get("INTEGRATIONS_TICK_S", str(defaults.integrations_tick_s))),
+            slack_bot_token=get("SLACK_BOT_TOKEN", ""),
+            jira_url=get("JIRA_URL", "").rstrip("/"),
+            jira_email=get("JIRA_EMAIL", ""),
+            jira_api_token=get("JIRA_API_TOKEN", ""),
         )
 
     def role_for_token(self, token: str) -> Role | None:

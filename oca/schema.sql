@@ -113,3 +113,14 @@ CREATE TABLE IF NOT EXISTS integration_outbox (
   last_error    TEXT
 );
 CREATE INDEX IF NOT EXISTS outbox_due ON integration_outbox (status, next_attempt);
+
+-- Per-ticket state an integration keeps about its own copy of the ticket, one row per
+-- (ticket, target): Slack stores the channel and thread it posts into. Kept apart from
+-- tickets.external_ref, which names the system that reported the ticket.
+CREATE TABLE IF NOT EXISTS integration_links (
+  ticket_id   TEXT NOT NULL REFERENCES tickets(id),
+  target      TEXT NOT NULL,                        -- jira | slack
+  ref         TEXT NOT NULL DEFAULT '{}',           -- JSON, e.g. {"channel","thread_ts"}
+  updated_at  TEXT NOT NULL,
+  PRIMARY KEY (ticket_id, target)
+);
