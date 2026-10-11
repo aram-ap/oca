@@ -16,7 +16,7 @@
     {% if user %}
     <div class="nav-label">WORKSPACE</div>
     <ul class="nav-links">
-      {% for href, label, symbol in [("/dash","Overview","◫"),("/tickets","Tickets","▤"),("/deployments","Deployments","↗"),("/logs","Logs","≡"),("/health","Health","♡"),("/settings","Settings","⚙")] %}
+      {% for href, label, symbol in [("/dash","Overview","◫"),("/tickets","Tickets","▤"),("/deployments","Deployments","↗"),("/logs","Logs","≡"),("/health","Health","♡"),("/integrations","Integrations","⇄"),("/settings","Settings","⚙")] %}
       <li><a href="{{ href }}" {% if path.startswith(href) %}aria-current="page"{% endif %}><span class="nav-symbol" aria-hidden="true">{{ symbol }}</span>{{ label }}</a></li>
       {% endfor %}
     </ul>

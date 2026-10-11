@@ -21,6 +21,12 @@ def build_integrations(app: FastAPI) -> list[Integration]:
     return [JiraIntegration(app), SlackIntegration(app)]
 
 
+def integration_worker(app: FastAPI) -> IntegrationWorker:
+    """The running worker, or an idle one (for status and connection tests) when it is not started."""
+    worker = getattr(app.state, "integrations", None)
+    return worker if worker is not None else IntegrationWorker(app, build_integrations(app))
+
+
 async def start_integrations(app: FastAPI) -> asyncio.Task:
     worker = IntegrationWorker(app, build_integrations(app))
     app.state.integrations = worker
@@ -28,4 +34,4 @@ async def start_integrations(app: FastAPI) -> asyncio.Task:
 
 
 __all__ = ["DeliveryError", "Integration", "IntegrationWorker", "JiraIntegration", "SlackIntegration",
-           "build_integrations", "start_integrations"]
+           "build_integrations", "integration_worker", "start_integrations"]

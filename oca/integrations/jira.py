@@ -98,8 +98,12 @@ class JiraIntegration(Integration):
     # ------------------------------------------------------------------ configuration
 
     def has_credentials(self) -> bool:
+        return not self.missing_credentials()
+
+    def missing_credentials(self) -> list[str]:
         s = self.app.state.settings
-        return bool(s.jira_url and s.jira_email and s.jira_api_token)
+        return [name for name, value in (("OCA_JIRA_URL", s.jira_url), ("OCA_JIRA_EMAIL", s.jira_email),
+                                         ("OCA_JIRA_API_TOKEN", s.jira_api_token)) if not value]
 
     def enabled(self, cfg: dict[str, Any]) -> bool:
         return super().enabled(cfg) and bool(str(cfg.get("project") or "").strip() or str(cfg.get("jql") or "").strip())
@@ -307,3 +311,40 @@ class JiraIntegration(Integration):
         _, sent = await self._call(client, "POST", f"/rest/api/2/issue/{key}/transitions",
                                    {"transition": {"id": match["id"]}})
         return sent
+
+    # ------------------------------------------------------------------ connection test
+
+    async def check(self) -> dict[str, Any]:
+        """Log in, find the project, and confirm every status in the status map exists on its board."""
+        missing = self.missing_credentials()
+        if missing:
+            return {"ok": False, "detail": f"Set {', '.join(missing)} in .env and restart OCA.", "lines": []}
+        cfg = await self.config()
+        project = str(cfg.get("project") or "").strip()
+        if not project:
+            return {"ok": False, "detail": "Set the Jira project key in Settings first.", "lines": []}
+        lines: list[str] = []
+        try:
+            async with self._client() as client:
+                me, _ = await self._call(client, "GET", "/rest/api/2/myself")
+                lines.append(f"ok  logged in as {(me or {}).get('displayName', 'unknown')}")
+                proj, _ = await self._call(client, "GET", f"/rest/api/2/project/{project}")
+                lines.append(f"ok  project {(proj or {}).get('key', project)}: {(proj or {}).get('name', '')}")
+                types, _ = await self._call(client, "GET", f"/rest/api/2/project/{project}/statuses")
+        except DeliveryError as exc:
+            return {"ok": False, "detail": str(exc), "lines": lines}
+        by_type = {t.get("name"): {st.get("name") for st in t.get("statuses", [])} for t in types or []}
+        issue_type = cfg.get("issue_type") or "Task"
+        if issue_type not in by_type:
+            lines.append(f"ERR issue type '{issue_type}' is not in the project; use one of: {', '.join(by_type)}")
+            return {"ok": False, "detail": "Issue type not found.", "lines": lines}
+        board = by_type[issue_type]
+        lines.append(f"ok  issue type '{issue_type}'; board columns: {', '.join(sorted(board))}")
+        ok = True
+        for stage, status in {**DEFAULT_STATUS_MAP, **(cfg.get("status_map") or {})}.items():
+            found = status in board
+            ok = ok and found
+            lines.append(f"{'ok ' if found else 'ERR'} {stage} -> '{status}'")
+        detail = "Connected; the board matches the status map." if ok else \
+            "Connected, but some statuses are not on the board; fix the status map in Settings."
+        return {"ok": ok, "detail": detail, "lines": lines}

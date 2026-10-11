@@ -5,13 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from oca.api.deps import get_db, get_settings
 from oca.auth import Principal, current_principal, require
 from oca.config import Settings
 from oca.db import Database
-from oca.schemas import LocalAIStats, Role, TicketEvent
+from oca.integrations import integration_worker
+from oca.schemas import LocalAIStats, OutboundDetail, Role, TicketEvent
 
 router = APIRouter(tags=["system"])
 
@@ -47,15 +48,15 @@ async def ollama_loaded(settings: Settings) -> bool | None:
 
 
 @router.get("/stats/local-ai", response_model=LocalAIStats)
-async def local_ai(settings: Settings = Depends(get_settings), db: Database = Depends(get_db),
+async def local_ai(request: Request, settings: Settings = Depends(get_settings), db: Database = Depends(get_db),
                    _: Principal = Depends(current_principal)):
     bytes_sent = await db.total_bytes_sent()
-    jira = await db.get_setting("jira", {}) or {}
-    if jira.get("base_url"):
-        hosted = "self-hosted" if jira.get("deployment") == "data_center" else "metadata only"
-        mode = f"{hosted} · {bytes_sent} bytes external"
+    sending = [s.name for s in await integration_worker(request.app).status()
+               if s.outbound_detail is not OutboundDetail.off]
+    if sending:
+        mode = f"{', '.join(sending)} · metadata only · {bytes_sent} bytes external"
     else:
-        mode = "not connected · 0 bytes external"
+        mode = f"not connected · {bytes_sent} bytes external"
     return LocalAIStats(hardware=settings.hardware, model=settings.model, ticketing_mode=mode,
                         ticketing_bytes_sent=bytes_sent, ollama_url=settings.ollama_url,
                         loaded=await ollama_loaded(settings))

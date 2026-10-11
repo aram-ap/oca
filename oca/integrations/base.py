@@ -50,6 +50,10 @@ class Integration:
         """True when the secrets this integration needs are set in the environment."""
         return False
 
+    def missing_credentials(self) -> list[str]:
+        """Names of the .env settings still to fill in, for the dashboard."""
+        return []
+
     def enabled(self, cfg: dict[str, Any]) -> bool:
         """Switched on in settings and able to log in. Gates reading (``poll``)."""
         return bool(cfg.get("enabled")) and self.has_credentials()
@@ -75,6 +79,10 @@ class Integration:
 
     async def deliver(self, item: dict[str, Any]) -> int:
         raise DeliveryError(f"{self.name} cannot send messages", retryable=False)
+
+    async def check(self) -> dict[str, Any]:
+        """Test the connection for the dashboard: {"ok": bool, "detail": str, "lines": [...]}."""
+        return {"ok": False, "detail": f"{self.name} has no connection test", "lines": []}
 
     # ------------------------------------------------------------------------ helpers
 

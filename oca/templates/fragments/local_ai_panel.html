@@ -1,5 +1,5 @@
 <section class="panel local-ai-panel" id="local-ai" hx-get="/dash/local-ai" hx-trigger="every 15s" hx-swap="outerHTML">
   <div class="section-heading"><div><p class="eyebrow">ON YOUR MACHINE</p><h2>Local AI</h2></div><span class="badge ok">100% LOCAL</span></div>
   <div class="model-detail"><span class="model-icon" aria-hidden="true">✳</span><div><strong>{{ local_ai.model }}</strong><small>Ollama · {{ 'Model loaded' if local_ai.loaded else 'Model idle' if local_ai.loaded is false else 'Status unavailable' }}</small></div></div>
-  <dl class="ai-details"><div><dt>Hardware</dt><dd>{{ local_ai.hardware }}</dd></div><div><dt>Cloud LLM requests</dt><dd>0</dd></div><div><dt>Infrastructure uploaded</dt><dd>0 bytes</dd></div><div><dt>Jira sync</dt><dd>{{ 'Metadata only · ' ~ local_ai.bytes_sent ~ ' bytes' if local_ai.jira.get('base_url') else 'Not connected' }}</dd></div></dl>
+  <dl class="ai-details"><div><dt>Hardware</dt><dd>{{ local_ai.hardware }}</dd></div><div><dt>Cloud LLM requests</dt><dd>0</dd></div><div><dt>Infrastructure uploaded</dt><dd>0 bytes</dd></div>{% for t in local_ai.ticketing %}<div><dt>{{ t.label }} sync</dt><dd>{{ 'Metadata only · ' ~ t.bytes ~ ' bytes' if t.on else 'Not connected' }}</dd></div>{% endfor %}</dl>
 </section>

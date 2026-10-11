@@ -12,7 +12,9 @@ from oca.api import deployments as deployments_api
 from oca.api.system import ollama_loaded
 from oca.api.tickets import SSE_HEADERS, event_stream
 from oca.auth import Principal
-from oca.schemas import Actor, EventType, Role, TicketEvent, TicketStatus
+from oca.integrations import integration_worker
+from oca.integrations.jira import DEFAULT_STATUS_MAP
+from oca.schemas import Actor, EventType, OutboundDetail, Role, TicketEvent, TicketStatus
 from oca.web.common import TEMPLATES, is_fragment, render, web_user
 from oca.web.topology import topology_context
 
@@ -74,8 +76,11 @@ def _runner_state(request: Request) -> dict[str, Any] | None:
 
 async def _local_ai(request: Request) -> dict[str, Any]:
     db, settings = request.app.state.db, request.app.state.settings
+    ticketing = [{"label": INTEGRATION_LABELS.get(s.name, s.name.title()),
+                  "on": s.outbound_detail is not OutboundDetail.off, "bytes": s.bytes_sent}
+                 for s in await integration_worker(request.app).status()]
     return {"hardware": settings.hardware, "model": settings.model, "bytes_sent": await db.total_bytes_sent(),
-            "jira": await db.get_setting("jira", {}) or {}, "loaded": await ollama_loaded(settings)}
+            "ticketing": ticketing, "loaded": await ollama_loaded(settings)}
 
 
 @router.get("/dash/local-ai")
@@ -246,14 +251,105 @@ async def logs(request: Request, user: Principal = Depends(_user)):
     return render(request, "pages/logs.html", events=list(reversed(events)))
 
 
+# ------------------------------------------------------------------- integrations
+
+INTEGRATION_LABELS = {"jira": "Jira", "slack": "Slack"}
+
+
+async def _integration_views(request: Request) -> list[dict[str, Any]]:
+    """Everything the Integrations and Settings pages show per integration. Never includes secrets."""
+    worker = integration_worker(request.app)
+    statuses = {s.name: s for s in await worker.status()}
+    views = []
+    for name, integration in worker.integrations.items():
+        cfg = await integration.config()
+        status_map = {**DEFAULT_STATUS_MAP, **(cfg.get("status_map") or {})} if name == "jira" else {}
+        views.append({"name": name, "label": INTEGRATION_LABELS.get(name, name.title()), "cfg": cfg,
+                      "enabled": integration.enabled(cfg), "missing": integration.missing_credentials(),
+                      "status": statuses[name], "last_error": worker.state[name].last_error,
+                      "status_map_text": "\n".join(f"{k}={v}" for k, v in status_map.items())})
+    return views
+
+
+@router.get("/integrations")
+async def integrations_page(request: Request, user: Principal = Depends(_user)):
+    return render(request, "pages/integrations.html", integrations=await _integration_views(request), result=None)
+
+
+@router.post("/integrations/{name}/test")
+async def integration_test(request: Request, name: str, user: Principal = Depends(_user)):
+    integration = integration_worker(request.app).integrations.get(name)
+    if integration is None:
+        raise HTTPException(404, "Unknown integration")
+    result = {"name": name, **await integration.check()}
+    return render(request, "pages/integrations.html", integrations=await _integration_views(request), result=result)
+
+
+def _parse_status_map(text: str) -> dict[str, str]:
+    """'investigating=In Progress' per line (or comma separated) -> {stage: Jira status}."""
+    stages = {s.value for s in TicketStatus}
+    mapping: dict[str, str] = {}
+    for pair in filter(None, (p.strip() for p in text.replace("\n", ",").split(","))):
+        stage, sep, status = pair.partition("=")
+        stage, status = stage.strip(), status.strip()
+        if not sep or stage not in stages or not status:
+            raise ValueError(f"'{pair}' is not 'stage=Jira status' (stages: {', '.join(sorted(stages))})")
+        mapping[stage] = status
+    return mapping
+
+
+def _integration_changes(name: str, form) -> dict[str, Any]:
+    detail = str(form.get("outbound_detail") or OutboundDetail.minimal.value)
+    if detail not in {d.value for d in OutboundDetail}:
+        raise ValueError("Unknown privacy level")
+    changes: dict[str, Any] = {"enabled": form.get("enabled") is not None, "outbound_detail": detail}
+    if name == "slack":
+        changes["channel_id"] = str(form.get("channel_id") or "").strip()
+    elif name == "jira":
+        project = str(form.get("project") or "").strip().upper()
+        if project and not project.replace("_", "").isalnum():
+            raise ValueError("The project key is letters and numbers only, e.g. KAN")
+        try:
+            interval = int(str(form.get("poll_interval_s") or "30"))
+        except ValueError:
+            raise ValueError("The poll interval must be a whole number of seconds") from None
+        changes.update(project=project, jql=str(form.get("jql") or "").strip(), poll_interval_s=max(10, interval),
+                       default_service=str(form.get("default_service") or "").strip() or "orders-api",
+                       issue_type=str(form.get("issue_type") or "").strip() or "Task",
+                       create_on_detect=form.get("create_on_detect") is not None,
+                       status_map=_parse_status_map(str(form.get("status_map") or "")))
+    return changes
+
+
 # ----------------------------------------------------------------------- settings
+
+
+async def _settings_page(request: Request, **extra):
+    db = request.app.state.db
+    context = {"saved": False, "integration_saved": None, "integration_error": None, **extra}
+    return render(request, "pages/settings.html", stored=await db.all_settings(),
+                  allowlist=request.app.state.settings.allowlist_path.read_text(encoding="utf-8"),
+                  integrations=await _integration_views(request), **context)
 
 
 @router.get("/settings")
 async def settings_page(request: Request, user: Principal = Depends(_user)):
+    return await _settings_page(request)
+
+
+@router.post("/settings/integrations/{name}")
+async def integration_settings_save(request: Request, name: str, user: Principal = Depends(_user)):
+    if name not in integration_worker(request.app).integrations:
+        raise HTTPException(404, "Unknown integration")
+    try:
+        changes = _integration_changes(name, await request.form())
+    except ValueError as exc:
+        return await _settings_page(request, integration_error={"name": name, "message": str(exc)})
     db = request.app.state.db
-    return render(request, "pages/settings.html", stored=await db.all_settings(),
-                  allowlist=request.app.state.settings.allowlist_path.read_text(encoding="utf-8"), saved=False)
+    stored = dict(await db.get_setting(name, {}) or {})
+    stored.update(changes)
+    await db.set_setting(name, stored)
+    return await _settings_page(request, integration_saved=name)
 
 
 @router.post("/settings")
@@ -265,5 +361,4 @@ async def settings_save(request: Request, require_human_approval: str | None = F
     await db.set_setting("risk_threshold", max(0, min(100, risk_threshold)))
     await db.set_setting("cooldown_s", max(0, cooldown_s))
     await db.set_setting("blocklist", [b.strip() for b in blocklist.replace("\n", ",").split(",") if b.strip()])
-    return render(request, "pages/settings.html", stored=await db.all_settings(),
-                  allowlist=request.app.state.settings.allowlist_path.read_text(encoding="utf-8"), saved=True)
+    return await _settings_page(request, saved=True)

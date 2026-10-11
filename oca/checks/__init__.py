@@ -21,9 +21,9 @@ def build_checks(settings: Settings, runner, db) -> list[HealthCheck]:
         MetricsCheck(runner, db, interval_s=max(interval, 15)),
         LogErrorParse(runner, interval_s=max(interval, 15)),
         PlaceholderCheck("jira_ticket_reader", "jira", interval_s=30, enabled=False,
-                         detail="Jira integration not configured (M5)"),
+                         detail="Jira is read by the integrations worker; see the Integrations page"),
         PlaceholderCheck("slack_ticket_reader", "slack", interval_s=30, enabled=False,
-                         detail="Slack integration not configured (stretch)"),
+                         detail="Slack only receives updates; see the Integrations page"),
     ]
 
 

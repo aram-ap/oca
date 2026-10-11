@@ -25,4 +25,36 @@
     <div class="panel"><h4>Allowlist <span class="muted">(read-only, {{ settings.allowlist_path.name }})</span></h4><pre style="font-size:.75rem">{{ allowlist }}</pre></div>
   </div>
 </div>
+<h3 id="integrations">Integrations</h3>
+<p class="muted">Credentials are read from <code>.env</code> and never shown here. Connection status is on the <a href="/integrations">Integrations</a> page.</p>
+{% if integration_error %}<p style="color:#b02a37" id="integration-error">{{ integration_error.name | title }} not saved: {{ integration_error.message }}</p>{% endif %}
+{% if integration_saved %}<p style="color:#1e7e34" id="integration-saved">{{ integration_saved | title }} settings saved.</p>{% endif %}
+<div class="grid">
+{% for i in integrations %}
+  <form method="post" action="/settings/integrations/{{ i.name }}" class="panel" id="settings-{{ i.name }}">
+    <h4>{{ i.label }}</h4>
+    {% if i.missing %}<p class="muted">Missing in <code>.env</code>: <code>{{ i.missing | join(', ') }}</code></p>{% endif %}
+    <label><input type="checkbox" name="enabled" {% if i.cfg.enabled %}checked{% endif %}> Switched on</label>
+    {% if i.name == "slack" %}
+    <label>Channel ID <input name="channel_id" value="{{ i.cfg.channel_id }}" placeholder="C0123456789"></label>
+    {% elif i.name == "jira" %}
+    <label>Project key <input name="project" value="{{ i.cfg.project }}" placeholder="KAN"></label>
+    <label>Search (JQL, optional; default: project issues labelled <code>oca</code> in To Do) <input name="jql" value="{{ i.cfg.jql }}"></label>
+    <label>Check Jira every (seconds) <input type="number" name="poll_interval_s" min="10" value="{{ i.cfg.poll_interval_s }}"></label>
+    <label>Service when the issue has no component <input name="default_service" value="{{ i.cfg.default_service }}"></label>
+    <label>Issue type <input name="issue_type" value="{{ i.cfg.issue_type }}"></label>
+    <label><input type="checkbox" name="create_on_detect" {% if i.cfg.create_on_detect %}checked{% endif %}> Open a Jira issue for incidents OCA detects itself</label>
+    <label>Board column for each stage (<code>stage=Jira status</code>, one per line) <textarea name="status_map" rows="7">{{ i.status_map_text }}</textarea></label>
+    {% endif %}
+    <label>Privacy level
+      <select name="outbound_detail">
+        {% for level, text in [("minimal", "Minimal: IDs, status, times, links"), ("summary", "Summary: minimal + risk score"), ("off", "Off: send nothing")] %}
+        <option value="{{ level }}" {% if i.cfg.outbound_detail == level %}selected{% endif %}>{{ text }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Save {{ i.label }}</button>
+  </form>
+{% endfor %}
+</div>
 {% endblock %}

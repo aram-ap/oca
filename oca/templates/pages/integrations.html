@@ -1,0 +1,34 @@
+{% extends "base.html" %}{% block title %}Integrations{% endblock %}
+{% block content %}
+<h3>Integrations</h3>
+<p class="muted">Jira and Slack mirror tickets; all state and evidence stay on this machine. They receive only ticket IDs, status, severity, service, times and dashboard links. Switch them on and set channels and projects in <a href="/settings">Settings</a>; credentials live in <code>.env</code>.</p>
+{% if result %}
+<div class="panel" id="test-result">
+  <h4>{{ result.name | title }} connection test <span class="badge {{ 'ok' if result.ok else 'bad' }}">{{ 'OK' if result.ok else 'FAILED' }}</span></h4>
+  <p>{{ result.detail }}</p>
+  {% if result.lines %}<pre style="font-size:.75rem">{{ result.lines | join('\n') }}</pre>{% endif %}
+</div>
+{% endif %}
+<div class="grid">
+{% for i in integrations %}
+  <div class="panel" id="integration-{{ i.name }}">
+    <h4>{{ i.label }}
+      {% if i.enabled and i.status.connected %}<span class="badge ok">CONNECTED</span>
+      {% elif i.enabled %}<span class="badge">ON · NOT YET CONFIRMED</span>
+      {% else %}<span class="badge bad">OFF</span>{% endif %}
+    </h4>
+    <table class="compact">
+      <tr><td>Switched on</td><td>{{ 'Yes' if i.cfg.enabled else 'No' }}</td></tr>
+      <tr><td>Credentials (.env)</td><td>{% if i.missing %}Missing: <code>{{ i.missing | join(', ') }}</code>{% else %}Set{% endif %}</td></tr>
+      <tr><td>Privacy level</td><td><code>{{ i.status.outbound_detail.value }}</code></td></tr>
+      <tr><td>Last successful sync</td><td>{{ i.status.last_sync | dt if i.status.last_sync else 'Never' }}</td></tr>
+      <tr><td>Messages waiting</td><td>{{ i.status.outbox_pending }}</td></tr>
+      <tr><td>Messages failed</td><td>{{ i.status.outbox_failed }}</td></tr>
+      <tr><td>Bytes sent off this machine</td><td>{{ i.status.bytes_sent }}</td></tr>
+      {% if i.last_error %}<tr><td>Last error</td><td><code>{{ i.last_error }}</code></td></tr>{% endif %}
+    </table>
+    <form method="post" action="/integrations/{{ i.name }}/test"><button type="submit" class="secondary">Test connection</button></form>
+  </div>
+{% endfor %}
+</div>
+{% endblock %}

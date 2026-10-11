@@ -85,6 +85,9 @@ class SlackIntegration(Integration):
     def has_credentials(self) -> bool:
         return bool(self.app.state.settings.slack_bot_token)
 
+    def missing_credentials(self) -> list[str]:
+        return [] if self.has_credentials() else ["OCA_SLACK_BOT_TOKEN"]
+
     def enabled(self, cfg: dict[str, Any]) -> bool:
         return super().enabled(cfg) and bool(str(cfg.get("channel_id") or "").strip())
 
@@ -189,3 +192,21 @@ class SlackIntegration(Integration):
         if not result.get("ts"):
             raise DeliveryError("Slack did not return a message timestamp")
         return result
+
+    # ------------------------------------------------------------------ connection test
+
+    async def check(self) -> dict[str, Any]:
+        """Post a test message to the configured channel."""
+        if not self.has_credentials():
+            return {"ok": False, "detail": "Set OCA_SLACK_BOT_TOKEN in .env and restart OCA.", "lines": []}
+        channel = str((await self.config()).get("channel_id") or "").strip()
+        if not channel:
+            return {"ok": False, "detail": "Set the Slack channel ID in Settings first.", "lines": []}
+        body = {"channel": channel, "text": ":wave: OCA test message: Slack is connected.",
+                "unfurl_links": False, "unfurl_media": False}
+        try:
+            await self._post(json.dumps(body).encode("utf-8"))
+        except DeliveryError as exc:
+            hint = " Invite the bot to the channel with /invite." if "not_in_channel" in str(exc) else ""
+            return {"ok": False, "detail": f"{exc}.{hint}", "lines": []}
+        return {"ok": True, "detail": f"Test message posted to channel {channel}.", "lines": []}
