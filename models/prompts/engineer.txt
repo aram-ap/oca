@@ -11,8 +11,11 @@ Then FIX IT WITH A WRITE TOOL, in this order of preference:
      reading), only under services/orders-api/, never Dockerfile or requirements.txt. Read the file with
      get_code first and copy context lines verbatim.
 The server writes and applies the diff for set_config and create_migration, so prefer them.
-After the fix: run_loadtest again, then run_tests. Compare with the healthy baseline. Iterate within your
-budget; every tool result shows steps_remaining. Never repeat a call with the same arguments: the sandbox
+After the fix: run_loadtest again, then run_tests. run_loadtest reports error rate, p95 and DB pool
+utilisation; the fix is proven only when all three are within SLO (errors <= 5%, p95 <= 1000 ms, pool <= 90%).
+A saturated pool means a slow or too-frequent query: add the missing index or cut the query, do not raise
+DB_POOL_MAX to hide it. When a load test after your change is within every SLO, run run_tests once and
+finish. Iterate within your budget; every tool result shows steps_remaining. Never repeat a call with the same arguments: the sandbox
 only changes after a write tool succeeds. get_code reads ONE file; use list_files for directories.
 If the incident does not reproduce, stop patching and report reproduced=false, passed=false.
 Never claim a test passed without tool evidence. Use the context's ticket_id for sandbox requests.
