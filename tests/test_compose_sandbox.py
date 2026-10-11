@@ -96,6 +96,12 @@ async def test_lifecycle_owns_resources_without_company_sandbox_scripts(sandbox_
     assert model["name"].startswith("oca-sandbox-")
     assert model["volumes"]["pgdata"]["name"] != "driftwood_pgdata"
     assert model["networks"]["default"]["internal"] is True
+    # Internal networks never publish host ports, so published services also join a non-internal bridge.
+    assert model["networks"]["oca-published"] == {"name": f"{r.sandbox.project}_oca-published", "driver": "bridge"}
+    for name in ("orders-api", "prometheus", "frontend"):
+        assert set(services[name]["networks"]) == {"default", "oca-published"}
+    for name in ("postgres", "redis", "loadgen"):
+        assert services[name]["networks"] == {"default": {}}
     assert services["postgres"]["ports"] == services["redis"]["ports"] == []
     assert services["orders-api"]["ports"][0]["published"] == "18000"
     assert services["orders-api"]["ports"][0]["host_ip"] == "127.0.0.1"

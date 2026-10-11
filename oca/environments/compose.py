@@ -26,6 +26,7 @@ from oca.fakeco.runner import RunnerError, SandboxInfo
 
 log = logging.getLogger("oca.environments")
 TEST_IMAGE_CONTEXT = Path(__file__).parent / "test_runner"
+PUBLISHED_NETWORK = "oca-published"  # non-internal bridge for the loopback-published services only
 SERVICE_KEYS = {
     "build", "image", "command", "entrypoint", "environment", "ports", "networks", "volumes",
     "depends_on", "healthcheck", "restart", "shm_size", "deploy", "labels", "expose", "profiles",
@@ -139,6 +140,12 @@ class ComposeSandbox:
                 if kind == "networks":
                     resources[name].update(driver="bridge", internal=True)
         model["networks"].setdefault("default", {"name": f"{self.project}_default", "driver": "bridge", "internal": True})
+        # Docker never binds host ports for containers that sit only on internal networks, so the
+        # services OCA publishes on loopback also join a second, non-internal bridge. Everything
+        # else (database, cache, load generator, tests) stays on the internal network only.
+        if PUBLISHED_NETWORK in model["networks"]:
+            raise RunnerError(f"Compose network name {PUBLISHED_NETWORK!r} is reserved by OCA")
+        model["networks"][PUBLISHED_NETWORK] = {"name": f"{self.project}_{PUBLISHED_NETWORK}", "driver": "bridge"}
         for name, service in services.items():
             unexpected = set(service) - SERVICE_KEYS
             if unexpected:
@@ -157,6 +164,7 @@ class ComposeSandbox:
             if name in self.ports:
                 target, published = self.ports[name]
                 service["ports"] = [{"target": target, "published": str(published), "host_ip": "127.0.0.1", "protocol": "tcp"}]
+                service["networks"][PUBLISHED_NETWORK] = {}
             allowed = self.profile.environment_allowlist.get(name, [])
             environment = service.get("environment") or {}
             service["environment"] = {key: value for key, value in environment.items() if key in allowed}
