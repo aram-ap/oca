@@ -281,6 +281,17 @@ export OCA_DATA_DIR=/path/to/oca/data    # must be outside the company checkout
 python3 -m oca.main
 ```
 
+**Scripted shortcut.** `scripts/setup.sh` runs this whole bring-up (preflight, reset Driftwood to
+baseline, start OCA, wait for health); `scripts/inject.sh [timeout|loyalty]` then ships a demo
+incident through the company's deploy path. Both read the `OCA_*` variables above (defaults match
+the GX10) and source `$OCA_DEMO_ENV` (default `~/.config/oca/demo.env`) for anything kept out of git.
+
+```bash
+scripts/setup.sh                 # company at baseline + OCA running, both healthy
+scripts/inject.sh                # inject the `timeout` incident; watch /dash
+scripts/inject.sh loyalty        # the migration variant
+```
+
 Requirements: Git, Docker Engine and Docker Compose v2 supporting `config --format json` and `up --wait`, plus a committed company checkout with build files, tests and synthetic seed data. OCA retains its existing `ops/status.py` and `ops/deploy.sh` production integrations; no company sandbox scripts or `sandbox.env` are needed. Database reset recreates **all sandbox volumes** from synthetic seeds, so it is slower than the former index-only reset. Production volumes are never reset.
 
 The test container uses OCA's `oca/environments/test_runner/Dockerfile` (Python 3.12, pytest and httpx). Build it while online, along with the company's app/loadgen images and pull the base images, before an offline demo:
