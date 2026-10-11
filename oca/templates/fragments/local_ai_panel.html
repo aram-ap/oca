@@ -1,11 +1,5 @@
-<div class="panel" id="local-ai" hx-get="/dash/local-ai" hx-trigger="every 15s" hx-swap="outerHTML">
-  <h4>LOCAL AI</h4>
-  <table class="localai">
-    <tr><td>Hardware</td><td>{{ local_ai.hardware }}</td></tr>
-    <tr><td>Model</td><td>{{ local_ai.model }} (via Ollama{% if local_ai.loaded %} · loaded{% elif local_ai.loaded is false %} · idle{% endif %})</td></tr>
-    <tr><td>Inference</td><td class="big">100% LOCAL</td></tr>
-    <tr><td>Cloud LLM requests</td><td>0</td></tr>
-    <tr><td>Infrastructure data uploaded</td><td>0 bytes</td></tr>
-    <tr><td>Ticketing sync (Jira)</td><td>{% if local_ai.jira.get('base_url') %}metadata only · {{ local_ai.bytes_sent }} bytes{% else %}not connected · 0 bytes external{% endif %}</td></tr>
-  </table>
-</div>
+<section class="panel local-ai-panel" id="local-ai" hx-get="/dash/local-ai" hx-trigger="every 15s" hx-swap="outerHTML">
+  <div class="section-heading"><div><p class="eyebrow">ON YOUR MACHINE</p><h2>Local AI</h2></div><span class="badge ok">100% LOCAL</span></div>
+  <div class="model-detail"><span class="model-icon" aria-hidden="true">✳</span><div><strong>{{ local_ai.model }}</strong><small>Ollama · {{ 'Model loaded' if local_ai.loaded else 'Model idle' if local_ai.loaded is false else 'Status unavailable' }}</small></div></div>
+  <dl class="ai-details"><div><dt>Hardware</dt><dd>{{ local_ai.hardware }}</dd></div><div><dt>Cloud LLM requests</dt><dd>0</dd></div><div><dt>Infrastructure uploaded</dt><dd>0 bytes</dd></div><div><dt>Jira sync</dt><dd>{{ 'Metadata only · ' ~ local_ai.bytes_sent ~ ' bytes' if local_ai.jira.get('base_url') else 'Not connected' }}</dd></div></dl>
+</section>

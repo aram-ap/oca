@@ -900,3 +900,23 @@ Recorded so nobody re-litigates them by accident. Any can be overturned by the t
 - **Done (2026-10-10):** `oca/` platform — contracts, SQLite layer, `/api` with per-token scoping, health checks + scheduler, SSE timeline, command gate + allowlist, sandbox manager, backup, staged executor with auto-restore, in-process pipeline, dashboard; `oca/fakeco/` runner seam with a deterministic `FakeRunner` and the real `SubprocessRunner`. `models/` — Ollama client, registry, bounded loop, three agents, tool catalog, orchestrator (with the Guardian evidence audit, total deadline and duplicate-run guard from the parallel orchestrator work), `--ticket` CLI. 64 tests (`python3 -m pytest`), no Docker or GPU required.
 - **Verified live:** Nemotron native tool calling on the GX10; the full pipeline on a Mac with `gpt-oss:latest` over the dry runner (`INC-0001` detected → correct diagnosis → one-line fix proven in the sandbox → Guardian APPROVE risk 10 → gate green → awaiting approval in 66 s).
 - **Pending:** real-mode run on the GX10 against the standalone driftwood clone (`OCA_RUNNER=real OCA_FAKECO_ROOT=…`; the box needs the `docker` group for `asus` and `pip install -r requirements.txt`); M5 Jira integration (`oca/integrations/`); Chart.js metrics charts; A8 profiling and concurrency benchmark.
+
+### Dashboard appearance update
+
+- Added a light, minimal workspace with sidebar navigation, responsive layouts,
+  clearer health and activity summaries, a local AI card, and ticket empty states.
+- Kept the existing routes, forms, and HTMX fragment refreshes. Fonts and assets
+  remain local. The web interaction tests pass; browser visual review is pending.
+
+### Infrastructure command center update
+
+- Added a dark command-center theme inspired by the provided dashboard reference,
+  an SVG infrastructure map with raised nodes, and a system insights panel.
+- Animated wires illustrate connections with colors derived from recorded checks,
+  model-loaded status, sandbox availability, and the latest active ticket stage.
+  Lines do not represent measured network traffic; unknown and stale health is
+  shown separately from passing checks.
+- Added five-second authenticated map refreshes, a pause control, reduced-motion
+  support, and an interrupted-connection state that stops signal animations.
+- Seven targeted web/topology tests pass and JavaScript syntax checks pass.
+  Visual browser verification remains pending because no browser is connected.

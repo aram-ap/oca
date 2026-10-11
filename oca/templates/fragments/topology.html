@@ -1,0 +1,42 @@
+<section id="system-map" class="system-map" hx-get="/dash/topology" hx-trigger="every 5s" hx-swap="outerHTML" hx-request='{"timeout":8000}' aria-label="Infrastructure topology and latest status">
+  <div class="topology-stage">
+    <div class="canvas-caption"><span class="status-dot {{ 'danger' if topology.overall == 'danger' else 'warning' if topology.overall == 'pending' else '' }}"></span>{{ topology.overall_label }}<span class="map-mode">{{ 'SIMULATED INFRASTRUCTURE' if dry else 'CONNECTED INFRASTRUCTURE' }}</span></div>
+    <div class="stale-message" role="status">Connection interrupted · displaying last recorded status</div>
+    <svg class="topology-svg" viewBox="80 10 940 755" role="img" aria-labelledby="topology-title topology-description">
+      <title id="topology-title">Local incident response system</title>
+      <desc id="topology-description">Nemotron connects to Investigator, Engineer and Guardian. The orchestrator uses the Main Process API and database to coordinate production, sandbox and observability. Animated lines illustrate connections; colors reflect recorded status, not network traffic.</desc>
+      <defs>
+        <pattern id="map-grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#29414c" stroke-width=".6"/></pattern>
+        <linearGradient id="node-face" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#1a2c37"/><stop offset="1" stop-color="#101d27"/></linearGradient>
+        <filter id="map-shadow" x="-40%" y="-40%" width="180%" height="200%"><feDropShadow dx="0" dy="12" stdDeviation="10" flood-color="#020a10" flood-opacity=".65"/></filter>
+      </defs>
+      <path class="map-floor" d="M115 555L550 325L985 555L550 770Z" fill="url(#map-grid)" stroke="#2a414d" stroke-width="1"/>
+      <path class="map-floor-outline" d="M115 555V570L550 785L985 570V555 M550 770V785" fill="none" stroke="#1c333f"/>
+      <text class="layer-label" x="105" y="95">01 / INFERENCE</text><text class="layer-label" x="105" y="380">02 / CONTROL</text><text class="layer-label" x="105" y="730">03 / INFRASTRUCTURE</text>
+      {% for wire in topology.wires %}<g class="wire state-{{ wire.state }}"><path class="wire-track" d="{{ wire.path }}"/><path class="wire-signal" d="{{ wire.path }}" style="animation-delay: -{{ loop.index % 4 }}s"/></g>{% endfor %}
+      {% for node in topology.nodes %}
+      <a href="{{ node.href }}" class="topology-node state-{{ node.state }}" data-node="{{ node.key }}" aria-label="{{ node.title }}: {{ node.label }}">
+        <g transform="translate({{ node.x }} {{ node.y }})" filter="url(#map-shadow)">
+          <path class="node-base" d="M0 12H180V88L170 98H10L0 88Z"/>
+          <rect class="node-face" width="180" height="88" rx="10" fill="url(#node-face)"/>
+          <path class="node-topline" d="M12 1H168"/>
+          <circle class="node-dot" cx="16" cy="21" r="3"/>
+          <text class="node-title" x="27" y="26">{{ node.title }}</text>
+          <text class="node-subtitle" x="15" y="46">{{ node.subtitle }}</text>
+          <text class="node-status" x="15" y="70">{{ node.label }}</text>
+          <path class="node-port" d="M76 89H104"/>
+        </g>
+      </a>{% endfor %}
+    </svg>
+    <div class="map-legend"><span><i class="legend-dot healthy"></i>Passing / responding</span><span><i class="legend-dot active"></i>Active stage</span><span><i class="legend-dot danger"></i>Needs attention</span><span><i class="legend-dot pending"></i>Pending / unknown</span><span><i class="legend-dot idle"></i>Idle</span></div>
+  </div>
+  <aside class="map-inspector" aria-label="System details">
+    <p class="eyebrow">SYSTEM INSIGHTS</p><h2>At a glance</h2>
+    <div class="insight-stat"><span>Health checks passing</span><strong>{{ topology.passing }}<small> / {{ topology.enabled }}</small></strong><div class="health-meter" role="meter" aria-label="Checks passing" aria-valuemin="0" aria-valuemax="{{ topology.enabled or 1 }}" aria-valuenow="{{ topology.passing }}"><span style="width:{{ (100 * topology.passing / topology.enabled) | round if topology.enabled else 0 }}%"></span></div><small>{{ topology.overall_label }}</small></div>
+    <div class="inspector-item"><span class="legend-dot {{ topology.overall }}"></span><div><strong>Production</strong><small>{{ topology.overall_label }}</small></div><a href="/health" aria-label="View production health">↗</a></div>
+    <div class="inspector-item"><span class="legend-dot {{ topology.nodes[0].state }}"></span><div><strong>Local inference</strong><small>{{ topology.nodes[0].label }}</small></div><a href="/settings" aria-label="View model settings">↗</a></div>
+    <div class="inspector-ticket"><p class="eyebrow">LATEST ACTIVE TICKET</p>{% if topology.active_ticket %}<a href="/tickets/{{ topology.active_ticket.id }}">{{ topology.active_ticket.id }} ↗</a><strong>{{ topology.active_ticket.title }}</strong><span class="badge status-{{ topology.active_ticket.status.value }}">{{ topology.active_ticket.status.value | replace('_', ' ') }}</span>{% else %}<strong>No active ticket in recent activity</strong><small>Your team is standing by.</small>{% endif %}</div>
+    <div class="inspector-note"><span class="status-dot"></span>Everything stays local</div>
+    <p class="signal-explanation">Lines illustrate system connections. Agent activity follows the latest ticket stage. Health colors reflect recorded checks.</p><small class="map-updated">Updated {{ topology.checked_at }}</small>
+  </aside>
+</section>

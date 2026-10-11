@@ -14,6 +14,7 @@ from oca.api.tickets import SSE_HEADERS, event_stream
 from oca.auth import Principal
 from oca.schemas import Actor, EventType, Role, TicketEvent, TicketStatus
 from oca.web.common import TEMPLATES, is_fragment, render, web_user
+from oca.web.topology import topology_context
 
 router = APIRouter(dependencies=[Depends(web_user)])
 
@@ -50,9 +51,20 @@ async def dash(request: Request, user: Principal = Depends(_user)):
     open_tickets = [t for t in tickets if t.status.value not in ("resolved", "failed", "rolled_back")]
     checks = await db.list_checks()
     deployments = await db.list_deployments(limit=5)
+    local_ai = await _local_ai(request)
+    runner_state = _runner_state(request)
     return render(request, "pages/dash.html", tickets=tickets, open_tickets=open_tickets, checks=checks,
-                  deployments=deployments, local_ai=await _local_ai(request),
-                  dry=settings.runner == "dry", runner_state=_runner_state(request))
+                  deployments=deployments, local_ai=local_ai,
+                  dry=settings.runner == "dry", runner_state=runner_state,
+                  topology=topology_context(checks, tickets, local_ai, runner_state))
+
+
+@router.get("/dash/topology")
+async def topology_fragment(request: Request, user: Principal = Depends(_user)):
+    db = request.app.state.db
+    return render(request, "fragments/topology.html", topology=topology_context(
+        await db.list_checks(), await db.list_tickets(limit=10),
+        await _local_ai(request), _runner_state(request)), dry=request.app.state.settings.runner == "dry")
 
 
 def _runner_state(request: Request) -> dict[str, Any] | None:

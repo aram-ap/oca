@@ -1,35 +1,27 @@
-{% extends "base.html" %}{% block title %}Dashboard{% endblock %}
+{% extends "base.html" %}{% block title %}Overview{% endblock %}
 {% block content %}
-<div class="grid">
-  <div>
-    {% include "fragments/local_ai_panel.html" %}
-    <div class="kpi">
-      <div class="panel"><div class="num">{{ open_tickets | length }}</div><div class="muted">open tickets</div></div>
-      <div class="panel"><div class="num">{{ checks | selectattr("last_ok", "equalto", false) | list | length }}</div><div class="muted">failing checks</div></div>
-      <div class="panel"><div class="num">{{ deployments | length }}</div><div class="muted">recent deployments</div></div>
-    </div>
-  </div>
-  <div>
-    <div class="panel">
-      <h4>Company under test{% if dry %} <span class="badge">dry mode · FakeRunner</span>{% endif %}</h4>
-      {% if dry %}
-      <p class="muted">No Docker here: the fake company models driftwood's two incidents deterministically.</p>
-      <div class="actions">
-        <form method="post" action="/dash/inject"><input type="hidden" name="incident" value="timeout"><button>INJECT INCIDENT: timeout</button></form>
-        <form method="post" action="/dash/inject"><input type="hidden" name="incident" value="loyalty"><button class="secondary">INJECT INCIDENT: loyalty</button></form>
-        <form method="post" action="/dash/reset"><button class="outline secondary">Reset company</button></form>
-      </div>
-      {% if runner_state %}<p class="muted" style="margin-top:.6rem">incident: <code>{{ runner_state.effective_incident or "none" }}</code> · version {{ runner_state.version }} · sha {{ runner_state.sha }} · sandbox {{ "up" if runner_state.sandbox.up else "down" }}</p>{% endif %}
-      {% else %}
-      <p class="muted">Real mode: production is the driftwood clone at <code>{{ settings.fakeco_root }}</code>. Trigger the demo with <code>ops/inject.sh timeout</code> there.</p>
-      {% endif %}
-    </div>
-    <div class="panel">
-      <h4>Health checks</h4>
-      <table class="compact">{% for c in checks if c.enabled %}<tr><td>{{ c.name }}</td><td>{% if c.last_result %}<span class="badge {{ 'ok' if c.last_ok else 'bad' }}">{{ "ok" if c.last_ok else "FAIL" }}</span>{% else %}<span class="muted">pending</span>{% endif %}</td><td class="muted">{{ c.last_result.detail if c.last_result else "" }}</td></tr>{% endfor %}</table>
-    </div>
-  </div>
+{% set enabled = checks | selectattr("enabled") | list %}
+{% set failing = enabled | selectattr("last_result") | selectattr("last_ok", "equalto", false) | list %}
+{% set pending = enabled | rejectattr("last_result") | list %}
+<header class="page-heading"><div><p class="eyebrow">OPERATIONS / OVERVIEW</p><h1>Infrastructure command center</h1><p class="muted">Your local AI team. Your infrastructure. One live view.</p></div><span class="environment-label"><span class="status-dot {{ 'warning' if dry else '' }}"></span>{{ 'Simulation' if dry else 'Production' }}</span></header>
+<div class="map-toolbar"><div><span class="toolbar-label">SYSTEM TOPOLOGY</span><span class="muted">ASUS Ascent GX10 · Local inference</span></div><button type="button" class="signal-toggle" data-toggle-signals aria-pressed="false">Pause signals</button></div>
+{% include "fragments/topology.html" %}
+<div class="summary-strip"><div><span class="status-dot {{ 'danger' if failing else 'warning' if pending or not enabled else '' }}"></span><strong>{{ 'Checks need attention' if failing else 'Waiting for health checks' if pending or not enabled else 'All enabled checks passing' }}</strong></div><a href="/health">View system health ↗</a></div>
+<section class="metrics-grid" aria-label="Recent activity summary">
+  <div class="metric-card"><span class="metric-label">Open in recent activity</span><strong>{{ open_tickets | length }}</strong><span class="metric-foot">From the latest {{ tickets | length }} tickets</span></div>
+  <div class="metric-card"><span class="metric-label">Failing health checks</span><strong class="{{ 'text-danger' if failing else '' }}">{{ failing | length }}</strong><span class="metric-foot">{{ enabled | length }} enabled · {{ pending | length }} pending</span></div>
+  <div class="metric-card"><span class="metric-label">Recent deployments</span><strong>{{ deployments | length }}</strong><a class="metric-foot" href="/deployments">View deployment history ↗</a></div>
+</section>
+<div class="overview-grid">
+  <section class="panel health-panel"><div class="section-heading"><div><p class="eyebrow">MONITORING</p><h2>Health checks</h2></div><a href="/health">View all ↗</a></div><div class="health-list">
+    {% for c in enabled %}<div class="health-row"><span class="status-dot {{ 'danger' if c.last_result and not c.last_ok else 'neutral' if not c.last_result else '' }}"></span><div><strong>{{ c.name | replace('_', ' ') }}</strong><small>{{ c.last_result.detail if c.last_result else 'Awaiting first result' }}</small></div><span class="badge {{ 'ok' if c.last_result and c.last_ok else 'bad' if c.last_result else '' }}">{{ 'Passing' if c.last_result and c.last_ok else 'Failing' if c.last_result else 'Pending' }}</span></div>
+    {% else %}<p class="empty-note">No checks enabled. <a href="/health">Manage health checks</a>.</p>{% endfor %}
+  </div></section>
+  {% include "fragments/local_ai_panel.html" %}
 </div>
-<h4>Current tickets</h4>
-{% with tickets=tickets, status_filter=None %}{% include "fragments/ticket_table.html" %}{% endwith %}
+<section class="panel incident-panel"><div class="section-heading"><div><p class="eyebrow">INCIDENT RESPONSE</p><h2>Recent tickets</h2></div><a href="/tickets">View all tickets ↗</a></div>{% with tickets=tickets, status_filter=None %}{% include "fragments/ticket_table.html" %}{% endwith %}</section>
+<section class="panel company-panel"><div><p class="eyebrow">{{ 'DEMO ENVIRONMENT' if dry else 'CONNECTED ENVIRONMENT' }}</p><h2>Driftwood Coffee Co.</h2><p class="muted">{{ 'Simulate an incident to explore the response workflow.' if dry else 'Monitor the connected production stack and validate fixes in its sandbox.' }}</p>
+  {% if runner_state %}<div class="company-meta"><span>Incident <strong>{{ runner_state.effective_incident or 'None' }}</strong></span><span>Version <strong>{{ runner_state.version }}</strong></span><span>Sandbox <strong>{{ 'Running' if runner_state.sandbox.up else 'Stopped' }}</strong></span></div>{% endif %}</div>
+  {% if dry %}<div class="actions demo-actions"><form method="post" action="/dash/inject"><input type="hidden" name="incident" value="timeout"><button aria-label="INJECT INCIDENT: timeout">Simulate timeout</button></form><form method="post" action="/dash/inject"><input type="hidden" name="incident" value="loyalty"><button class="outline secondary" aria-label="INJECT INCIDENT: loyalty">Simulate loyalty</button></form><form method="post" action="/dash/reset"><button class="reset-button">Reset environment</button></form></div>{% endif %}
+</section>
 {% endblock %}

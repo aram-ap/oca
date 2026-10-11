@@ -1,5 +1,5 @@
 <div id="ticket-table" hx-get="/tickets{% if status_filter %}?status={{ status_filter.value }}{% endif %}" hx-trigger="every 5s" hx-swap="outerHTML">
-<table class="compact">
+<div class="table-scroll"><table class="compact">
   <thead><tr><th>Ticket</th><th>Service</th><th>Title</th><th>Severity</th><th>Status</th><th>Source</th><th>Opened</th></tr></thead>
   <tbody>
   {% for t in tickets %}
@@ -13,8 +13,8 @@
     <td class="muted">{{ t.created_at | dt }}</td>
   </tr>
   {% else %}
-  <tr><td colspan="7" class="muted">No tickets. {% if settings.runner == "dry" %}Inject an incident from the dashboard.{% else %}Run <code>ops/inject.sh timeout</code> in the driftwood clone.{% endif %}</td></tr>
+  <tr><td colspan="7"><div class="table-empty"><span class="empty-icon" aria-hidden="true">✓</span><strong>No tickets to show</strong><p>New incidents will appear here when a health check detects a problem.</p>{% if settings.runner == "dry" %}<small>You can simulate an incident from the overview.</small>{% endif %}</div></td></tr>
   {% endfor %}
   </tbody>
-</table>
+</table></div>
 </div>

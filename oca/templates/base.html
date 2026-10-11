@@ -1,27 +1,29 @@
 <!doctype html>
 <html lang="en" data-theme="dark">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}OCA{% endblock %} · OCA</title>
-  <link rel="stylesheet" href="/static/pico.min.css">
-  <link rel="stylesheet" href="/static/oca.css">
-  <script src="/static/htmx.min.js" defer></script>
-  <script src="/static/htmx-sse.js" defer></script>
-  <script src="/static/alpine.min.js" defer></script>
+  <link rel="stylesheet" href="/static/pico.min.css"><link rel="stylesheet" href="/static/oca.css">
+  <link rel="stylesheet" href="/static/command-center.css">
+  <script src="/static/htmx.min.js" defer></script><script src="/static/htmx-sse.js" defer></script><script src="/static/alpine.min.js" defer></script>
+  <script src="/static/dashboard.js" defer></script>
 </head>
-<body>
-<nav class="container-fluid topbar">
-  <ul><li><strong>OCA</strong> <span class="muted">On-Call Agent</span></li></ul>
-  <ul>
-    {% for href, label in [("/dash","Dashboard"),("/tickets","Tickets"),("/deployments","Deployments"),("/logs","Logs"),("/health","Health"),("/settings","Settings")] %}
-    <li><a href="{{ href }}" {% if path.startswith(href) %}aria-current="page"{% endif %}>{{ label }}</a></li>
-    {% endfor %}
-    {% if user %}<li><form method="post" action="/logout" style="margin:0"><button class="outline secondary" style="padding:.2rem .7rem">Logout</button></form></li>{% endif %}
-  </ul>
-</nav>
-<main class="container-fluid">
-{% block content %}{% endblock %}
-</main>
+<body class="{% if not user %}guest{% endif %}">
+<a class="skip-link" href="#main-content">Skip to content</a>
+<div class="app-shell">
+  <nav class="sidebar" aria-label="Main navigation">
+    <a class="brand" href="/dash"><span class="brand-mark" aria-hidden="true">o</span><span>OCA<small>On-Call Agent</small></span></a>
+    {% if user %}
+    <div class="nav-label">WORKSPACE</div>
+    <ul class="nav-links">
+      {% for href, label, symbol in [("/dash","Overview","◫"),("/tickets","Tickets","▤"),("/deployments","Deployments","↗"),("/logs","Logs","≡"),("/health","Health","♡"),("/settings","Settings","⚙")] %}
+      <li><a href="{{ href }}" {% if path.startswith(href) %}aria-current="page"{% endif %}><span class="nav-symbol" aria-hidden="true">{{ symbol }}</span>{{ label }}</a></li>
+      {% endfor %}
+    </ul>
+    <div class="sidebar-footer"><div class="local-note"><span class="status-dot"></span>Local inference</div><div class="account-row"><span class="avatar" aria-hidden="true">A</span><span>Local account</span></div><form method="post" action="/logout"><button class="logout-button">Sign out</button></form></div>
+    {% endif %}
+  </nav>
+  <main id="main-content" class="main-content">{% block content %}{% endblock %}<footer class="page-footer">OCA <span>·</span> Local incident response</footer></main>
+</div>
 </body>
 </html>
