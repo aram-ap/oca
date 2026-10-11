@@ -11,12 +11,13 @@ import asyncio
 from fastapi import FastAPI
 
 from oca.integrations.base import DeliveryError, Integration
+from oca.integrations.slack import SlackIntegration
 from oca.integrations.worker import IntegrationWorker
 
 
 def build_integrations(app: FastAPI) -> list[Integration]:
-    """Every integration OCA knows about. Slack and Jira register here."""
-    return []
+    """Every integration OCA knows about. Jira registers here next."""
+    return [SlackIntegration(app)]
 
 
 async def start_integrations(app: FastAPI) -> asyncio.Task:
@@ -25,4 +26,5 @@ async def start_integrations(app: FastAPI) -> asyncio.Task:
     return await worker.start()
 
 
-__all__ = ["DeliveryError", "Integration", "IntegrationWorker", "build_integrations", "start_integrations"]
+__all__ = ["DeliveryError", "Integration", "IntegrationWorker", "SlackIntegration", "build_integrations",
+           "start_integrations"]
