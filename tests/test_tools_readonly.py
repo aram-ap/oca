@@ -29,6 +29,10 @@ async def test_tool_shapes(app, client, auth):
     inv = auth(Role.investigator)
     logs = (await client.get("/api/tools/logs", params={"service": "orders-api", "lines": 50}, headers=inv)).json()
     assert logs["lines"] == 50 and logs["error_lines"] > 0 and logs["evidence_ref"].startswith("logs:orders-api")
+    assert logs["summary"]["top_errors"][0]["count"] > 0 and "database request timeout" in logs["summary"]["top_errors"][0]["message"]
+    assert logs["entries"][0]["status"] == 500 and len(logs["entries"][0]["request_id"]) == 8  # errors first, compacted
+    big = (await client.get("/api/tools/logs", params={"service": "orders-api", "lines": 200}, headers=inv)).json()
+    assert len(str(big)) < 20_000  # always inside the agents' observation budget
     assert (await client.get("/api/tools/logs", params={"service": "orders-api", "lines": 500}, headers=inv)).status_code == 422
     assert (await client.get("/api/tools/logs", params={"service": "mysql"}, headers=inv)).status_code == 422
 

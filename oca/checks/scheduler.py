@@ -44,6 +44,7 @@ class Scheduler:
         self.checks: dict[str, HealthCheck] = {c.name: c for c in build_checks(self.settings, app.state.runner, self.db)}
         self._last_failed_event: dict[str, float] = {}
         self._ok_streak: dict[str, int] = {}
+        self._lock = asyncio.Lock()  # ticks and run-now calls never overlap, so a service opens one ticket at a time
         self.ticks = 0
 
     async def register(self) -> None:
@@ -62,19 +63,24 @@ class Scheduler:
             await asyncio.sleep(self.settings.scheduler_tick_s)
 
     async def tick(self, force: bool = False) -> list[CheckResult]:
-        self.ticks += 1
-        now = datetime.now(timezone.utc)
-        results = []
-        for info in await self.db.list_checks():
-            check = self.checks.get(info.name)
-            if check is None or not info.enabled:
-                continue
-            due = force or info.last_run is None or now - info.last_run >= timedelta(seconds=info.interval_s)
-            if due:
-                results.append(await self.run_check(info.name))
-        return results
+        async with self._lock:
+            self.ticks += 1
+            now = datetime.now(timezone.utc)
+            results = []
+            for info in await self.db.list_checks():
+                check = self.checks.get(info.name)
+                if check is None or not info.enabled:
+                    continue
+                due = force or info.last_run is None or now - info.last_run >= timedelta(seconds=info.interval_s)
+                if due:
+                    results.append(await self._run_check(info.name, True))
+            return results
 
     async def run_check(self, name: str, handle: bool = True) -> CheckResult:
+        async with self._lock:
+            return await self._run_check(name, handle)
+
+    async def _run_check(self, name: str, handle: bool) -> CheckResult:
         check = self.checks[name]
         try:
             result = await asyncio.wait_for(check.run(), CHECK_TIMEOUT_S)
@@ -96,7 +102,7 @@ class Scheduler:
         self._ok_streak[check.name] = 0
         if not check.opens_ticket or result.breaches == ["check_error"]:
             return
-        existing = await self.db.open_ticket_for_service(check.service)
+        existing = await self.db.blocking_ticket_for_service(check.service)
         if existing is not None:
             last = self._last_failed_event.get(existing.id, 0.0)
             if time.monotonic() - last >= CHECK_FAILED_EVENT_INTERVAL_S:

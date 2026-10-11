@@ -16,7 +16,36 @@ from oca.schemas import Role
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 Service = Literal["orders-api", "frontend", "postgres", "redis"]
-MAX_CODE_CHARS = 60_000
+# Keep every tool response comfortably inside the agents' observation budget.
+MAX_CODE_CHARS = 16_000
+MAX_DIFF_CHARS = 14_000
+LOG_ENTRY_BUDGET = 12_000
+LOG_FIELDS = ("ts", "level", "msg", "method", "route", "path", "status", "duration_ms", "query", "db_timeout_ms",
+              "pool_max", "acquire_timeout_ms", "error_type", "error", "upstream_ms", "request_id")
+CONTAINER_FIELDS = ("Name", "Service", "Image", "State", "Status", "Health", "Ports", "RunningFor", "RestartCount")
+
+
+def compact_log(entry: dict) -> dict:
+    out = {k: entry[k] for k in LOG_FIELDS if k in entry and entry[k] not in (None, "")}
+    if isinstance(out.get("request_id"), str):
+        out["request_id"] = out["request_id"][:8]
+    if not out:
+        out = {"msg": str(entry)[:200]}
+    return out
+
+
+def log_summary(rows: list[dict]) -> dict:
+    by_status: dict[str, int] = {}
+    messages: dict[str, int] = {}
+    for r in rows:
+        status = r.get("status")
+        if isinstance(status, int):
+            by_status[str(status)] = by_status.get(str(status), 0) + 1
+            if status >= 500:
+                key = f"{r.get('msg', 'error')} route={r.get('route') or r.get('path')} query={r.get('query')}"
+                messages[key] = messages.get(key, 0) + 1
+    top = sorted(messages.items(), key=lambda kv: -kv[1])[:5]
+    return {"by_status": by_status, "top_errors": [{"message": m, "count": c} for m, c in top]}
 
 
 def _stamp() -> str:
@@ -30,9 +59,21 @@ async def get_logs(service: Service, lines: int = Query(100, ge=1, le=200), runn
         rows = await runner.read_logs(service, lines)
     except RunnerError as exc:
         raise HTTPException(502, str(exc))
-    errors = sum(1 for r in rows if isinstance(r.get("status"), int) and r["status"] >= 500)
-    return {"evidence_ref": f"logs:{service}:{_stamp()}", "service": service, "lines": len(rows),
-            "error_lines": errors, "entries": rows}
+    compact = [compact_log(r) for r in rows]
+    errors = sum(1 for r in compact if isinstance(r.get("status"), int) and r["status"] >= 500)
+    # Error lines first (newest first), then the rest, until the byte budget is spent.
+    ordered = sorted(compact, key=lambda r: (0 if isinstance(r.get("status"), int) and r["status"] >= 500 else 1))
+    entries, used = [], 0
+    for r in ordered:
+        size = len(str(r)) + 2
+        if used + size > LOG_ENTRY_BUDGET:
+            break
+        entries.append(r)
+        used += size
+    return {"evidence_ref": f"logs:{service}:{_stamp()}", "service": service, "lines": len(rows), "error_lines": errors,
+            "returned": len(entries), "truncated": len(entries) < len(compact),
+            "note": "entries are compacted; error lines listed first" if len(entries) < len(compact) else None,
+            "summary": log_summary(compact), "entries": entries}
 
 
 @router.get("/containers")
@@ -41,7 +82,8 @@ async def get_containers(runner=Depends(get_runner), _: Principal = Depends(requ
         rows = await runner.containers()
     except RunnerError as exc:
         raise HTTPException(502, str(exc))
-    return {"evidence_ref": f"containers:{_stamp()}", "containers": rows}
+    compact = [{k: r.get(k) for k in CONTAINER_FIELDS if r.get(k) not in (None, "")} for r in rows]
+    return {"evidence_ref": f"containers:{_stamp()}", "containers": compact}
 
 
 @router.get("/metrics")
@@ -105,7 +147,8 @@ async def get_git(operation: Literal["history", "diff"], ref: str | None = Query
     except RunnerError as exc:
         raise HTTPException(502, str(exc))
     info = diffcheck.parse(diff)
-    return {"evidence_ref": f"git:diff:{label}", "ref": label, "diff": diff, "files_changed": info.files,
+    return {"evidence_ref": f"git:diff:{label}", "ref": label, "diff": diff[:MAX_DIFF_CHARS],
+            "truncated": len(diff) > MAX_DIFF_CHARS, "files_changed": info.files,
             "lines_added": info.added, "lines_removed": info.removed}
 
 

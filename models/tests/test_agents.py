@@ -126,10 +126,13 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("INC-1", json.dumps(model.histories[2]))
 
     async def test_observation_budget(self):
-        agent = Investigator(llm=ScriptedModel(call("get_logs", service="orders-api")),
-                             api_client=FakeAPI("investigator"), max_observation_chars=1)
-        with self.assertRaisesRegex(AgentError, "observation budget"):
+        # An oversize result is replaced by an error observation; the run continues and cannot finish on it alone.
+        model = ScriptedModel(call("get_logs", service="orders-api"), final(DIAGNOSIS))
+        agent = Investigator(llm=model, api_client=FakeAPI("investigator"), max_observation_chars=1, max_steps=2)
+        with self.assertRaisesRegex(AgentError, "exhausted"):
             await agent.run({"ticket_id": "INC-1"})
+        self.assertIn("observation budget", model.histories[1][-1]["content"])
+        self.assertIn("preview", model.histories[1][-1]["content"])
 
     async def test_engineer_iterates_after_failed_validation(self):
         class SandboxAPI(FakeAPI):

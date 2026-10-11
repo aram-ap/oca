@@ -72,7 +72,11 @@ class Agent:
                         result, ok = {"error": str(exc)}, False
                     content = json.dumps({"untrusted_tool_result": result}, allow_nan=False)
                     if len(content) > self.max_observation_chars:
-                        raise AgentError("Tool output exceeds observation budget; request narrower evidence")
+                        # Too big to feed the model: keep a preview and tell it to narrow the request.
+                        result, ok = {"error": (f"Tool output ({len(content)} chars) exceeds the observation budget "
+                                                f"({self.max_observation_chars}); request narrower evidence, e.g. fewer lines"),
+                                      "preview": content[:1500]}, False
+                        content = json.dumps({"untrusted_tool_result": result}, allow_nan=False)
                     observation = Observation(name, deepcopy(arguments), result, ok)
                     observations.append(observation)
                     await self._notify(observation)

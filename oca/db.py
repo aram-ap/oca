@@ -154,6 +154,16 @@ class Database:
         tickets = await self.list_tickets(service=service, open_only=True, limit=1)
         return tickets[0] if tickets else None
 
+    async def blocking_ticket_for_service(self, service: str) -> Ticket | None:
+        """Newest ticket that should stop the scheduler opening another: anything not resolved.
+
+        failed / rolled_back / denied tickets need a human; opening a new ticket every
+        interval while the incident persists would only bury the evidence.
+        """
+        row = await self._one("SELECT * FROM tickets WHERE service = ? AND status != ? ORDER BY created_at DESC LIMIT 1",
+                              (service, TicketStatus.resolved.value))
+        return self._ticket(row) if row else None
+
     async def last_resolved_at(self, service: str) -> datetime | None:
         row = await self._one("SELECT MAX(resolved_at) AS t FROM tickets WHERE service = ? AND resolved_at IS NOT NULL",
                               (service,))

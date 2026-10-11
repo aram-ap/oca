@@ -64,10 +64,11 @@ async def run_ticket(ticket_id: str, api_url: str, max_attempts: int):
 
     orchestrator.agents = {
         "investigator": Investigator(llm=llm, api_client=client("investigator", 60), on_observation=orchestrator.observer,
-                                     timeout_s=900),
+                                     timeout_s=900, max_steps=16, max_observation_chars=40_000),
         "engineer": Engineer(llm=llm, api_client=client("engineer", 1500), on_observation=orchestrator.observer,
-                             timeout_s=3600, tool_timeout_s=1500),
-        "guardian": Guardian(llm=llm, api_client=client("guardian", 60), on_observation=orchestrator.observer, timeout_s=900),
+                             timeout_s=3600, tool_timeout_s=1500, max_steps=16, max_observation_chars=40_000),
+        "guardian": Guardian(llm=llm, api_client=client("guardian", 60), on_observation=orchestrator.observer,
+                             timeout_s=900, max_steps=16, max_observation_chars=40_000),
     }
     return await orchestrator.run_ticket(ticket_id)
 

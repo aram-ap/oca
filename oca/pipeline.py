@@ -14,6 +14,8 @@ log = logging.getLogger("oca.pipeline")
 ENGINEER_TIMEOUT_S = 3600      # sandbox rebuilds and load tests take minutes each
 ENGINEER_TOOL_TIMEOUT_S = 1500
 AGENT_TIMEOUT_S = 900
+OBSERVATION_CHARS = 40_000     # real logs/diffs are bulky; tool endpoints cap themselves well below this
+MAX_STEPS = 16
 
 
 class Pipeline:
@@ -53,12 +55,15 @@ class Pipeline:
 
         orchestrator.agents = {
             "investigator": Investigator(llm=llm, api_client=client(Role.investigator, s.tool_timeout_s),
-                                         on_observation=orchestrator.observer, timeout_s=AGENT_TIMEOUT_S),
+                                         on_observation=orchestrator.observer, timeout_s=AGENT_TIMEOUT_S,
+                                         max_steps=MAX_STEPS, max_observation_chars=OBSERVATION_CHARS),
             "engineer": Engineer(llm=llm, api_client=client(Role.engineer, ENGINEER_TOOL_TIMEOUT_S),
                                  on_observation=orchestrator.observer, timeout_s=ENGINEER_TIMEOUT_S,
-                                 tool_timeout_s=ENGINEER_TOOL_TIMEOUT_S),
+                                 tool_timeout_s=ENGINEER_TOOL_TIMEOUT_S, max_steps=MAX_STEPS,
+                                 max_observation_chars=OBSERVATION_CHARS),
             "guardian": Guardian(llm=llm, api_client=client(Role.guardian, s.tool_timeout_s),
-                                 on_observation=orchestrator.observer, timeout_s=AGENT_TIMEOUT_S),
+                                 on_observation=orchestrator.observer, timeout_s=AGENT_TIMEOUT_S,
+                                 max_steps=MAX_STEPS, max_observation_chars=OBSERVATION_CHARS),
         }
         return orchestrator
 

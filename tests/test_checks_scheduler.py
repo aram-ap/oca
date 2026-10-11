@@ -46,6 +46,17 @@ async def test_detection_opens_exactly_one_ticket(app, client, auth):
     assert disabled.json()["enabled"] is False and disabled.json()["interval_s"] == 5
 
 
+async def test_failed_ticket_does_not_cause_a_storm(app):
+    scheduler, runner, db = app.state.scheduler, app.state.runner, app.state.db
+    runner.inject("timeout")
+    await scheduler.tick(force=True)
+    ticket = (await db.list_tickets())[0]
+    await db.set_status(ticket.id, TicketStatus.failed, actor="orchestrator")
+    for _ in range(3):
+        await scheduler.tick(force=True)
+    assert len(await db.list_tickets()) == 1  # a failed ticket needs a human, not a twin
+
+
 async def test_baseline_learning(app):
     scheduler, db = app.state.scheduler, app.state.db
     before = await db.get_setting("baseline")

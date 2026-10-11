@@ -58,6 +58,7 @@ class Settings:
     data_dir: Path = Path("data")
     fakeco_root: Path = Path("../driftwood")
     runner: str = "dry"
+    host: str = "127.0.0.1"
     port: int = 8001
     api_url: str = "http://localhost:8001"
     prom_url: str = "http://localhost:9090"
@@ -114,6 +115,7 @@ class Settings:
             data_dir=Path(get("DATA_DIR", str(defaults.data_dir))),
             fakeco_root=Path(get("FAKECO_ROOT", str(defaults.fakeco_root))).expanduser(),
             runner=get("RUNNER", defaults.runner),
+            host=get("HOST", defaults.host),
             port=int(get("PORT", str(defaults.port))),
             api_url=get("API_URL", defaults.api_url).rstrip("/"),
             prom_url=get("PROM_URL", defaults.prom_url).rstrip("/"),

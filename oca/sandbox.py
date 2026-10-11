@@ -196,7 +196,8 @@ class SandboxManager:
         text = await self.runner.sandbox_diff(run.patch_ref)
         info = diffcheck.parse(text)
         return {"evidence_ref": f"sandbox:{run.id}:diff", "sandbox_run_id": run.id, "patch_ref": run.patch_ref,
-                "diff": text[:100_000], "files_changed": info.files, "lines_added": info.added, "lines_removed": info.removed,
+                "diff": text[:14_000], "truncated": len(text) > 14_000, "files_changed": info.files,
+                "lines_added": info.added, "lines_removed": info.removed,
                 "risk_flags": diffcheck.risk_flags(text).model_dump()}
 
     async def test_results(self, ticket_id: str) -> dict[str, Any]:
