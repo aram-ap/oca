@@ -144,10 +144,14 @@ async def get_git(operation: Literal["history", "diff"], ref: str | None = Query
             diff = await runner.sandbox_diff(ref)
             label = ref
         elif ref and re.fullmatch(r"[A-Za-z0-9_./-]{4,100}", ref) and not ref.startswith("-"):
-            diff = await runner.git_diff(f"{ref}~1", ref)  # any commit or branch: diff against its parent
+            try:
+                diff = await runner.git_diff(f"{ref}~1", ref)  # any commit or branch: diff against its parent
+            except RunnerError:
+                diff = ""
             label = f"{ref}~1..{ref}"
             if not diff:
-                raise HTTPException(404, f"No diff for ref {ref!r}; use a deploy id (see operation=history), a sha, a..b, or fix/<ticket>")
+                known = ", ".join(f"{d.deploy_id}={d.git_sha}" for d in deployments[:5])
+                raise HTTPException(404, f"No such ref {ref!r}. Use a deploy id or sha from operation=history (recent: {known}), a..b, or fix/<ticket>")
         else:
             raise HTTPException(404, f"Unknown ref {ref!r}; use a deploy id, sha, a..b, or fix/<ticket>")
     except RunnerError as exc:

@@ -95,8 +95,8 @@ FENCED_NO_PREFIX = """```diff
 --- services/orders-api/config/app.env
 +++ services/orders-api/config/app.env
 @@ -3 +3 @@
--DB_TIMEOUT_MS=100
-+DB_TIMEOUT_MS=3000
+-DB_TIMEOUT_MS=3000
++DB_TIMEOUT_MS=2500
 ```"""
 
 
@@ -110,9 +110,14 @@ async def test_real_git_apply_tolerates_model_diffs(git_repo):
     assert "+DB_TIMEOUT_MS=3000" in await r.sandbox_diff("fix/INC-0001")
 
     # Second patch on the same branch: fenced, no a/ b/ prefixes, single-line hunk.
-    again = await r.apply_patch_in_sandbox("fix/INC-0001", FENCED_NO_PREFIX.replace("3000", "2500"), "tune")
+    again = await r.apply_patch_in_sandbox("fix/INC-0001", FENCED_NO_PREFIX, "tune")
     assert again.applied, again.error
     assert "DB_TIMEOUT_MS=2500" in (git_repo / ".sandbox" / "services/orders-api/config/app.env").read_text()
 
     garbage = await r.apply_patch_in_sandbox("fix/INC-0001", "--- a/services/orders-api/config/app.env\n+++ b/services/orders-api/config/app.env\n@@ -1 +1 @@\n-NOT IN FILE\n+X\n", "bad")
     assert not garbage.applied and "does not apply" in garbage.error
+
+
+def test_prometheus_nan_is_no_data():
+    from oca.fakeco.prometheus import finite
+    assert finite("NaN") is None and finite("+Inf") is None and finite("0.25") == 0.25 and finite(None) is None

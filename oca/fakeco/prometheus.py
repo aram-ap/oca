@@ -25,7 +25,15 @@ class PromClient:
         result = await self.instant(expr)
         if not result:
             return None
-        try:
-            return float(result[0]["value"][1])
-        except (KeyError, IndexError, TypeError, ValueError):
-            return None
+        return finite(result[0].get("value", [None, None])[1])
+
+
+def finite(raw) -> float | None:
+    """Prometheus encodes NaN/Inf as strings; those are 'no data', not numbers we can serialize."""
+    import math
+
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None

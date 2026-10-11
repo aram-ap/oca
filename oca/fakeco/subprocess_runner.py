@@ -17,7 +17,7 @@ from typing import Any
 import httpx
 
 from oca.fakeco import diffcheck
-from oca.fakeco.prometheus import PromClient
+from oca.fakeco.prometheus import PromClient, finite
 from oca.fakeco.runner import (
     SERVICES, BackupRef, DeployRecord, GitCommit, PatchResult, RunnerError, SandboxInfo,
     StatusSnapshot, check_readable_path,
@@ -126,11 +126,13 @@ class SubprocessRunner:
             if value is not None:
                 out[series] = value
         for row in await prom.instant("orders_api:db_query_p95_seconds:1m"):
-            query = row.get("metric", {}).get("query", "?")
-            out[f'orders_api:db_query_p95_seconds:1m{{query="{query}"}}'] = float(row["value"][1])
+            value = finite(row.get("value", [None, None])[1])
+            if value is not None:
+                out[f'orders_api:db_query_p95_seconds:1m{{query="{row.get("metric", {}).get("query", "?")}"}}'] = value
         for row in await prom.instant("orders_api:db_errors:rate1m"):
-            m = row.get("metric", {})
-            out[f'orders_api:db_errors:rate1m{{kind="{m.get("kind", "?")}",query="{m.get("query", "?")}"}}'] = float(row["value"][1])
+            m, value = row.get("metric", {}), finite(row.get("value", [None, None])[1])
+            if value is not None:
+                out[f'orders_api:db_errors:rate1m{{kind="{m.get("kind", "?")}",query="{m.get("query", "?")}"}}'] = value
         return out
 
     async def containers(self) -> list[dict[str, Any]]:
