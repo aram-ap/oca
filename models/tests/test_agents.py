@@ -190,9 +190,13 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         class ServerErrorAPI(FakeAPI):
             async def request(self, method, path, arguments):
                 raise ToolAPIError("HTTP 500", 500, "")
-        with self.assertRaises(ToolAPIError):
-            await Investigator(llm=ScriptedModel(call("get_logs", service="orders-api")),
-                               api_client=ServerErrorAPI("investigator")).run({"ticket_id": "INC-1"})
+        with self.assertRaises(ToolAPIError):  # a failed write (POST) aborts: it may have half-happened
+            await Engineer(llm=ScriptedModel(call("run_tests", ticket_id="INC-1")),
+                           api_client=ServerErrorAPI("engineer")).run({"ticket_id": "INC-1"})
+        reader = ScriptedModel(call("get_logs", service="orders-api"), call("get_metrics", service="orders-api"))
+        with self.assertRaises(AgentError):  # a failed read is just an observation; the run continues to its budget
+            await Investigator(llm=reader, api_client=ServerErrorAPI("investigator"), max_steps=2).run({"ticket_id": "INC-1"})
+        self.assertIn("HTTP 500", reader.histories[1][-1]["content"])
 
     async def test_role_catalogs_and_dispatch_both_enforce_permissions(self):
         expected = {
@@ -279,3 +283,30 @@ class LoopGuardTests(unittest.IsolatedAsyncioTestCase):
         model = ScriptedModel(call("get_logs", service="orders-api"), final(DIAGNOSIS))
         result = await Investigator(llm=model, api_client=api, max_steps=4).run({"ticket_id": "INC-1"})
         self.assertEqual(result.steps, 2)
+
+
+class ToolFailureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_read_is_a_tool_error_but_failed_write_aborts(self):
+        from models.tools.client import ToolAPIError
+
+        class FlakyAPI(FakeAPI):
+            async def request(self, method, path, arguments):
+                self.requests.append((method, path, arguments))
+                raise ToolAPIError("Main Process request failed (HTTP 502); no retry", 502, "runner failure")
+
+        api = FlakyAPI("engineer")
+        model = ScriptedModel(call("get_git", operation="diff", ref="deploy 26 (a..b)"),
+                              call("set_config", ticket_id="INC-1", key="DB_TIMEOUT_MS", value=3000))
+        with self.assertRaises(ToolAPIError):
+            await Engineer(llm=model, api_client=api, max_steps=4).run({"ticket_id": "INC-1"})
+        self.assertEqual(len(api.requests), 2)
+        read = model.histories[1][-1]  # the failed GET came back to the model as a tool error
+        self.assertEqual(read["role"], "tool")
+        self.assertIn("HTTP 502", read["content"])
+
+    async def test_tool_names_are_case_insensitive(self):
+        api = FakeAPI("investigator")
+        model = ScriptedModel(call("List_files", path="services/orders-api"), final(DIAGNOSIS))
+        result = await Investigator(llm=model, api_client=api, max_steps=3).run({"ticket_id": "INC-1"})
+        self.assertTrue(result.observations[0].ok)
+        self.assertEqual(api.requests[0][1], "/api/tools/files")

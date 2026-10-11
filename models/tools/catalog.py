@@ -54,11 +54,12 @@ def build_registry(client) -> ToolRegistry:
                 try:
                     return await client.request(method, path, arguments)
                 except ToolAPIError as exc:
-                    # A 4xx is the server rejecting *this* request (unknown path, bad ref, conflict):
-                    # the model should see it and try something else. 5xx/transport errors still abort,
-                    # because a write may or may not have happened and must not be retried blindly.
-                    if exc.status is not None and 400 <= exc.status < 500:
-                        raise ToolError(f"HTTP {exc.status}: {exc.body[:300] or 'request rejected'}") from exc
+                    # A 4xx is the server rejecting *this* request (unknown path, bad ref, conflict): the model
+                    # should see it and try something else. A failed GET is also safe to show, whatever the
+                    # status: nothing was written. A 5xx or transport failure on a POST still aborts, because
+                    # the write may or may not have happened and must not be retried blindly.
+                    if exc.status is not None and (400 <= exc.status < 500 or method == "GET"):
+                        raise ToolError(f"HTTP {exc.status}: {exc.body[:300] or 'request failed'}") from exc
                     raise
             return handler
 

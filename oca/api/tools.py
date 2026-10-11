@@ -131,19 +131,51 @@ async def list_files(path: str = Query(..., min_length=1), runner=Depends(get_ru
     return {"evidence_ref": f"files:{path.rstrip('/')}", "path": path, "files": files, "count": len(files)}
 
 
+GIT_REF = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]{0,99}")
+LABEL_DEPLOY = re.compile(r"deploy\s+(\d+)")
+LABEL_RANGE = re.compile(r"\(?([0-9a-fA-F]{6,40}\.\.[0-9a-fA-F]{6,40})\)?")
+
+
+def _normalise_ref(ref: str | None) -> str | None:
+    """Models copy evidence labels such as 'git:diff:deploy 26 (abc..def)' back as refs; accept them."""
+    if ref is None:
+        return None
+    ref = ref.strip()
+    for prefix in ("git:diff:", "git:history:", "diff:", "deploy:"):
+        if ref.lower().startswith(prefix):
+            ref = ref[len(prefix):].strip()
+    if match := LABEL_DEPLOY.search(ref):
+        return match.group(1)
+    if match := LABEL_RANGE.search(ref):
+        return match.group(1)
+    return ref
+
+
+def _is_maintenance(record) -> bool:
+    note = (getattr(record, "note", None) or "").lower()
+    return "reset to baseline" in note or note.startswith("reset")
+
+
 @router.get("/git")
 async def get_git(operation: Literal["history", "diff"], ref: str | None = Query(None, min_length=1, max_length=120),
                   runner=Depends(get_runner), _: Principal = Depends(require(Role.investigator, Role.engineer))):
+    ref = _normalise_ref(ref)
+    if ref is not None and not GIT_REF.fullmatch(ref):
+        raise HTTPException(404, f"Unusable ref {ref!r}. Use a deploy id or sha from operation=history, a..b, or fix/<ticket>")
     try:
         deployments = await runner.deployments(limit=20)
         if operation == "history":
             commits = await runner.git_log("main", 20)
-            return {"evidence_ref": f"git:history:{_stamp()}", "deployments": [d.as_dict() for d in deployments],
-                    "commits": [c.as_dict() for c in commits]}
+            records = [{**d.as_dict(), "maintenance": _is_maintenance(d)} for d in deployments]
+            latest = next((r for r in records if not r["maintenance"]), records[0] if records else None)
+            return {"evidence_ref": f"git:history:{_stamp()}", "latest_deployment": latest,
+                    "note": "latest_deployment is the newest change to investigate; maintenance deploys (resets to "
+                            "baseline) are not suspects. Diff it with operation=diff, ref=<its git_sha>.",
+                    "deployments": records, "commits": [c.as_dict() for c in commits]}
         target = None
         if ref is None and deployments:
             target = deployments[0]
-        elif ref is not None:
+        elif ref is not None and ".." not in ref:
             for d in deployments:  # deploy id, full sha, or a sha prefix either way round
                 if ref == str(d.deploy_id) or ref == d.git_sha or (len(ref) >= 6 and (d.git_sha.startswith(ref) or ref.startswith(d.git_sha))):
                     target = d

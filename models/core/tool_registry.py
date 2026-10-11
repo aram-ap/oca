@@ -81,7 +81,7 @@ class ToolRegistry:
         }} for tool in self._tools.values() if role in tool.roles]
 
     async def dispatch(self, role: str, name: str, arguments: dict) -> Any:
-        tool = self._tools.get(name)
+        tool = self._tools.get(name) or (self._tools.get(name.strip().lower()) if isinstance(name, str) else None)
         if tool is None or role not in tool.roles:
             raise ToolError("Tool is not allowed for this agent")
         validate(arguments, tool.parameters, "arguments")
