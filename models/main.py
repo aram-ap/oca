@@ -1,10 +1,16 @@
-"""Development smoke checks: python -m models.main --check [--tools]."""
+"""Development entry points.
+
+    python3 -m models.main --check [--tools]      smoke-test the local model (and a synthetic tool round trip)
+    python3 -m models.main --ticket INC-0042      run the agent pipeline against a running Main Process
+"""
 
 import argparse
 import asyncio
+import logging
+import os
 import sys
 
-from models.config import ModelConfig
+from models.config import ModelConfig, load_dotenv
 from models.core.llm import OllamaClient, OllamaError
 
 
@@ -40,14 +46,47 @@ async def check_model(config: ModelConfig, check_tools: bool = False) -> None:
     print("Tool calling passed (synthetic health result)")
 
 
+async def run_ticket(ticket_id: str, api_url: str, max_attempts: int) -> str:
+    from models.agents import Engineer, Guardian, Investigator
+    from models.orchestrator import Orchestrator
+    from models.tools.client import PlatformClient, ToolAPIClient
+
+    token = os.getenv("OCA_ORCHESTRATOR_TOKEN", "")
+    if not token:
+        raise ValueError("OCA_ORCHESTRATOR_TOKEN is required")
+    llm = OllamaClient(ModelConfig.from_env())
+    orchestrator = Orchestrator(PlatformClient(token=token, base_url=api_url), max_attempts=max_attempts)
+
+    def client(role: str, timeout: float) -> ToolAPIClient:
+        return ToolAPIClient(role=role, token=os.getenv(f"OCA_{role.upper()}_TOKEN", ""), base_url=api_url, timeout_s=timeout)
+
+    orchestrator.agents = {
+        "investigator": Investigator(llm=llm, api_client=client("investigator", 60), on_observation=orchestrator.observer,
+                                     timeout_s=900),
+        "engineer": Engineer(llm=llm, api_client=client("engineer", 1500), on_observation=orchestrator.observer,
+                             timeout_s=3600, tool_timeout_s=1500),
+        "guardian": Guardian(llm=llm, api_client=client("guardian", 60), on_observation=orchestrator.observer, timeout_s=900),
+    }
+    return await orchestrator.run_ticket(ticket_id)
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    load_dotenv()
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--check", action="store_true", help="Check local model inference")
     parser.add_argument("--tools", action="store_true", help="Also check a synthetic tool round trip")
+    parser.add_argument("--ticket", metavar="INC-0042", help="Run the agent pipeline for this ticket")
+    parser.add_argument("--api-url", default=os.getenv("OCA_API_URL", "http://localhost:8001"))
+    parser.add_argument("--max-attempts", type=int, default=int(os.getenv("OCA_MAX_ATTEMPTS", "2")))
     args = parser.parse_args()
-    if not args.check:
-        parser.error("Use --check; ticket orchestration is not implemented yet")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     try:
+        if args.ticket:
+            status = asyncio.run(run_ticket(args.ticket, args.api_url, args.max_attempts))
+            print(f"{args.ticket}: {status}")
+            return 0 if status != "failed" else 2
+        if not args.check:
+            parser.error("Use --check or --ticket")
         asyncio.run(check_model(ModelConfig.from_env(), args.tools))
     except (OllamaError, ValueError) as exc:
         print(f"Model check failed: {exc}", file=sys.stderr)

@@ -1,0 +1,39 @@
+<div id="gate-panel" class="panel">
+  <h4>Status <span class="badge status-{{ ticket.status.value }}">{{ ticket.status.value | replace("_"," ") }}</span></h4>
+  {% if gate %}
+    <ul class="checklist">{% for c in gate.checks %}<li class="{{ 'ok' if c.ok else ('fail' if c.ok is false else 'skip') }}">{{ c.n }}. {{ c.name | replace("_"," ") }}</li>{% endfor %}</ul>
+    <p class="muted" style="margin:.5rem 0">{{ gate.reason }}</p>
+  {% else %}
+    <p class="muted">No action has reached the command gate yet.</p>
+  {% endif %}
+  {% if review %}<p>Guardian: <span class="badge {{ 'ok' if review.decision == 'APPROVE' else 'bad' }}">{{ review.decision }}</span> risk {{ review.risk_score }}/100</p>{% endif %}
+  {% if run %}<p class="muted">Sandbox {{ run.id }}: reproduced {{ "✓" if run.reproduced else "✗" }} · fix proven {{ "✓" if run.passed else ("✗" if run.passed is false else "pending") }}</p>{% endif %}
+  {% if action and ticket.status.value in ("awaiting_approval", "denied") and action.status.value in ("awaiting_approval", "denied", "policy_pass") %}
+  <div class="actions" x-data>
+    <form hx-post="/tickets/{{ ticket.id }}/approve" hx-target="#gate-panel" hx-swap="outerHTML"
+          hx-confirm="{{ 'Override the gate denial and' if action.status.value == 'denied' else 'Approve and' }} execute {{ action.action.value }} {{ action.args | tojson }} against production?">
+      <input type="hidden" name="note" value="approved from dashboard">
+      <button type="submit">{{ "Override & Approve" if action.status.value == "denied" else "Approve" }}</button>
+    </form>
+    {% if action.status.value != "denied" %}
+    <form hx-post="/tickets/{{ ticket.id }}/deny" hx-target="#gate-panel" hx-swap="outerHTML" hx-confirm="Deny this action?">
+      <button type="submit" class="secondary">Deny</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endif %}
+  {% if deployment %}<p class="muted">Deployment {{ deployment.id }} · {{ deployment.status.value }}{% if deployment.backup_ref %} · backup <code>{{ deployment.backup_ref }}</code>{% endif %}</p>{% endif %}
+  {% if ticket.status.value in ("failed", "denied") %}
+  <form method="post" action="/tickets/{{ ticket.id }}/run" style="margin-top:.5rem"><button class="outline secondary">Re-run agents</button></form>
+  {% endif %}
+  {% if mttr %}
+  <h4 style="margin-top:1rem">INCIDENT RESOLVED</h4>
+  <table class="mttr" style="width:auto">
+    <tr><td>Diagnosis</td><td>{{ mttr.diagnosis_s | duration }}</td></tr>
+    <tr><td>Fix generated</td><td>{{ mttr.fix_s | duration }}</td></tr>
+    <tr><td>Validation</td><td>{{ mttr.validation_s | duration }}</td></tr>
+    <tr><td>Deployment</td><td>{{ mttr.deployment_s | duration }}</td></tr>
+    <tr><td>MTTR</td><td>{{ mttr.total_s | duration }}</td></tr>
+  </table>
+  {% endif %}
+</div>

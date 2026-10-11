@@ -1,8 +1,9 @@
 # Local model subsystem
 
-The first implemented milestone is configuration and a non-streaming async
-Ollama client. Agent loops, tools, role prompts, and orchestration remain planned.
-Python 3.12+ is supported; this milestone uses only the standard library.
+Configuration, a non-streaming async Ollama client, the bounded agent loop, the
+three role agents, the HTTP tool catalog and the orchestrator are implemented.
+Python 3.12+ is supported; the package uses only the standard library and never
+imports the platform (`oca/`). The platform conforms to the contracts here.
 
 From the repository root, on the GX10 with Ollama running and the model installed:
 
@@ -18,10 +19,10 @@ actual behavior before proceeding to the agent loop.
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
-| `OCE_MODEL` | `nemotron3:33b` | Installed Ollama model tag |
-| `OCE_OLLAMA_URL` | `http://localhost:11434` | HTTP loopback service address |
-| `OCE_LLM_TIMEOUT_S` | `120` | Socket timeout in seconds |
-| `OCE_MODEL_KEEP_ALIVE` | `5m` | How long Ollama keeps the model loaded |
+| `OCA_MODEL` | `nemotron3:33b` | Installed Ollama model tag |
+| `OCA_OLLAMA_URL` | `http://localhost:11434` | HTTP loopback service address |
+| `OCA_LLM_TIMEOUT_S` | `120` | Socket timeout in seconds |
+| `OCA_MODEL_KEEP_ALIVE` | `5m` | How long Ollama keeps the model loaded |
 
 The client ignores system proxies, rejects redirects and non-loopback URLs,
 preserves tool calls, and never executes tools. HTTP failures and malformed
@@ -45,10 +46,10 @@ loop, validated tool registry, and fresh per-run history. The loop returns an
 `AgentResult` with structured output and tool observations. Guardian's decision
 is advisory; none of these agents can submit actions or deploy.
 
-For live use, configure `OCE_API_URL` (default `http://localhost:8001`, chosen to
-avoid fakeco's port 8000), `OCE_TOOL_TIMEOUT_S` (default 30), and a distinct scoped
-token for each role: `OCE_INVESTIGATOR_TOKEN`, `OCE_ENGINEER_TOKEN`,
-`OCE_GUARDIAN_TOKEN`. There are no default tokens. Run limits default to 12 model
+For live use, configure `OCA_API_URL` (default `http://localhost:8001`, chosen to
+avoid fakeco's port 8000), `OCA_TOOL_TIMEOUT_S` (default 30), and a distinct scoped
+token for each role: `OCA_INVESTIGATOR_TOKEN`, `OCA_ENGINEER_TOKEN`,
+`OCA_GUARDIAN_TOKEN`. There are no default tokens. Run limits default to 12 model
 turns, 300 seconds total, 30 seconds per tool, and 20,000 characters per observation.
 They can be passed as constructor arguments.
 
@@ -85,6 +86,23 @@ thread immediately; the server must enforce operation deadlines and safe recover
 Prompts direct evidence gathering and sandbox proof; deterministic production
 approval still belongs to the future command gate, not these model outputs.
 
-Orchestration, ticket event persistence, the Main Process API, and live GX10/fakeco
-integration remain pending. Tests use scripted models and simulated tool APIs;
-they do not establish Nemotron's real reasoning or tool-calling performance.
+## Orchestrator
+
+`models/orchestrator.py` drives Investigator → Engineer → Guardian for one ticket and
+talks to the Main Process only over HTTP with `OCA_ORCHESTRATOR_TOKEN`
+(`PlatformClient`): ticket status, events, `/api/sandbox/{id}/prepare|validate`, and the
+final `POST /api/actions`. Sandbox validation is server-measured; failures feed back into
+the Engineer once per attempt, `NEEDS_TESTING` loops the Engineer and Guardian, `REJECT`
+and agent errors spend an attempt (`OCA_MAX_ATTEMPTS`, default 2), and exhaustion marks
+the ticket `failed`. Every tool observation is relayed as a `finding` event so the
+dashboard streams agent work live. The platform runs this in-process
+(`oca/pipeline.py`); standalone:
+
+```bash
+OCA_ORCHESTRATOR_TOKEN=... OCA_INVESTIGATOR_TOKEN=... OCA_ENGINEER_TOKEN=... OCA_GUARDIAN_TOKEN=... \
+python3 -m models.main --ticket INC-0001 --api-url http://localhost:8001
+```
+
+Tests use scripted models and simulated tool APIs; they do not establish Nemotron's
+real reasoning or tool-calling performance. Native tool calling was verified live on
+the GX10, and the whole pipeline ran end to end on a Mac with `gpt-oss:latest`.

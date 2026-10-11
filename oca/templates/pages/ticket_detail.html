@@ -1,0 +1,35 @@
+{% extends "base.html" %}{% block title %}{{ ticket.id }}{% endblock %}
+{% block content %}
+<hgroup>
+  <h3>{{ ticket.id }} <span class="badge sev-{{ ticket.severity.value }}">{{ ticket.severity.value }}</span></h3>
+  <p>{{ ticket.title }} · {{ ticket.service }} · {{ ticket.source.value }} · opened {{ ticket.created_at | dt }}</p>
+</hgroup>
+<div class="grid">
+  <div style="grid-column: span 2">
+    <div class="panel" hx-ext="sse" sse-connect="/tickets/{{ ticket.id }}/stream?after={{ last_event_id }}">
+      <h4>Timeline <span class="muted" style="font-size:.8rem">live</span></h4>
+      <ul class="timeline" id="timeline" sse-swap="event" hx-swap="beforeend">
+        {% include "fragments/timeline.html" %}
+      </ul>
+      <div sse-swap="status" hx-swap="none" hx-target="#gate-panel"></div>
+    </div>
+  </div>
+  <div>
+    {% include "fragments/gate_status.html" %}
+    <div class="panel">
+      <h4>Detection</h4>
+      <table class="compact" style="width:auto">
+        <tr><th></th><th>Baseline</th><th>At detect</th></tr>
+        <tr><td>Error rate</td><td>{{ (ticket.metrics_before or {}).get("error_rate_pct", "—") }}%</td><td>{{ (ticket.metrics_at_detect or {}).get("error_rate_pct", "—") }}%</td></tr>
+        <tr><td>P95</td><td>{{ (ticket.metrics_before or {}).get("p95_latency_ms", "—") }} ms</td><td>{{ (ticket.metrics_at_detect or {}).get("p95_latency_ms", "—") }} ms</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+<script>
+  // When the stream pushes a status event, refresh the gate panel in place.
+  document.addEventListener('htmx:sseMessage', function (e) {
+    if (e.detail && e.detail.type === 'status') { htmx.ajax('GET', '/tickets/{{ ticket.id }}/gate', {target: '#gate-panel', swap: 'outerHTML'}); }
+  });
+</script>
+{% endblock %}

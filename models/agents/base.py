@@ -18,9 +18,9 @@ class RoleAgent(Agent):
             raise ValueError("API client role must match the agent")
         if registry is None:
             api_client = api_client or ToolAPIClient(
-                role=self.ROLE, token=os.getenv(f"OCE_{self.ROLE.upper()}_TOKEN", ""),
-                base_url=os.getenv("OCE_API_URL", "http://localhost:8001"),
-                timeout_s=float(os.getenv("OCE_TOOL_TIMEOUT_S", "30")),
+                role=self.ROLE, token=os.getenv(f"OCA_{self.ROLE.upper()}_TOKEN", ""),
+                base_url=os.getenv("OCA_API_URL", "http://localhost:8001"),
+                timeout_s=float(os.getenv("OCA_TOOL_TIMEOUT_S", "30")),
             )
             registry = build_registry(api_client)
         prompt = (Path(__file__).resolve().parents[1] / "prompts" / f"{self.ROLE}.txt").read_text(encoding="utf-8")

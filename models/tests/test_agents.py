@@ -35,10 +35,12 @@ class ScriptedModel:
         self.replies = list(replies)
         self.histories = []
         self.schemas = []
+        self.formats = []
 
-    async def chat(self, messages, *, tools):
+    async def chat(self, messages, *, tools, response_format=None):
         self.histories.append(deepcopy(messages))
         self.schemas.append(deepcopy(tools))
+        self.formats.append(response_format)
         return deepcopy(self.replies.pop(0))
 
 
@@ -97,6 +99,8 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         result = await Guardian(llm=model, api_client=api).run({"ticket_id": "INC-1"})
         self.assertEqual(result.steps, 3)
         self.assertIn("Invalid final output", model.histories[-1][-1]["content"])
+        # The repair turn asks Ollama for schema-constrained JSON; normal turns do not.
+        self.assertEqual([f is not None for f in model.formats], [False, False, True])
 
     async def test_no_evidence_cannot_complete(self):
         agent = Investigator(llm=ScriptedModel(final(DIAGNOSIS)),

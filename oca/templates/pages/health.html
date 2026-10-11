@@ -1,0 +1,6 @@
+{% extends "base.html" %}{% block title %}Health{% endblock %}
+{% block content %}
+<h3>Overall system health</h3>
+<p class="muted">Deterministic checks decide <em>that</em> something is wrong. No LLM is involved here.</p>
+{% include "fragments/check_table.html" %}
+{% endblock %}

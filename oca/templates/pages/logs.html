@@ -1,0 +1,8 @@
+{% extends "base.html" %}{% block title %}Logs{% endblock %}
+{% block content %}
+<h3>Ticket event log</h3>
+<table class="compact">
+  <thead><tr><th>Time</th><th>Ticket</th><th>Actor</th><th>Type</th><th>Payload</th></tr></thead>
+  <tbody>{% for e in events %}<tr><td class="muted">{{ e.ts | dt }}</td><td><a href="/tickets/{{ e.ticket_id }}">{{ e.ticket_id }}</a></td><td>{{ e.actor.value }}</td><td>{{ e.type.value }}</td><td class="muted"><code>{{ (e.payload | tojson)[:200] }}</code></td></tr>{% endfor %}</tbody>
+</table>
+{% endblock %}

@@ -1,0 +1,30 @@
+# Command check gate allowlist. The LLM never writes shell; the orchestrator submits one of
+# these named, parameterised actions and the gate validates args and evidence in order.
+version: 1
+defaults:
+  risk_threshold: 30      # overridden by settings.risk_threshold at runtime
+  cooldown_s: 120         # overridden by settings.cooldown_s
+actions:
+  deploy_patch:
+    description: Merge a sandbox-proven fix branch into main and deploy it (ops/deploy.sh)
+    args:
+      ticket_id: { type: str, pattern: "^INC-\\d{4,}$" }
+      branch:    { type: str, pattern: "^fix/INC-\\d{4,}$" }
+    requires: [backup, sandbox_reproduced, sandbox_fixed, tests_pass, guardian_approve, risk_below]
+  set_config:
+    description: Change one allowlisted orders-api config key in app.env, commit, and deploy
+    args:
+      service: { enum: [orders-api] }
+      key:     { enum: [DB_TIMEOUT_MS, DB_POOL_MAX, DB_POOL_ACQUIRE_TIMEOUT_MS] }
+      value:   { type: int, min: 100, max: 30000 }
+    requires: [backup, sandbox_reproduced, sandbox_fixed, guardian_approve, risk_below]
+  restart_service:
+    description: docker compose restart of one production service
+    args:
+      service: { enum: [orders-api, frontend] }
+    requires: [backup]
+  rollback:
+    description: Restore the backup taken before a previous deployment
+    args:
+      deployment_id: { type: str, pattern: "^DEP-\\d{4,}$" }
+    requires: [backup]

@@ -1,0 +1,28 @@
+{% extends "base.html" %}{% block title %}Settings{% endblock %}
+{% block content %}
+<h3>Settings</h3>
+{% if saved %}<p style="color:#1e7e34">Saved.</p>{% endif %}
+<div class="grid">
+  <form method="post" action="/settings" class="panel">
+    <h4>Policy</h4>
+    <label><input type="checkbox" name="require_human_approval" {% if stored.require_human_approval %}checked{% endif %}> Require human approval before executing (D3)</label>
+    <label>Risk threshold (Guardian score must be below) <input type="number" name="risk_threshold" min="0" max="100" value="{{ stored.risk_threshold }}"></label>
+    <label>Deployment cooldown (seconds) <input type="number" name="cooldown_s" min="0" value="{{ stored.cooldown_s }}"></label>
+    <label>Blocked actions (comma separated) <input name="blocklist" value="{{ stored.blocklist | join(', ') }}" placeholder="restart_service, rollback"></label>
+    <button type="submit">Save</button>
+  </form>
+  <div>
+    <div class="panel">
+      <h4>Runtime</h4>
+      <table class="compact">
+        <tr><td>Runner</td><td><code>{{ settings.runner }}</code></td></tr>
+        <tr><td>Fakeco root</td><td><code>{{ settings.fakeco_root }}</code></td></tr>
+        <tr><td>Model</td><td><code>{{ settings.model }}</code> @ {{ settings.ollama_url }}</td></tr>
+        <tr><td>Baseline (learned)</td><td><code>{{ stored.baseline | tojson }}</code></td></tr>
+        <tr><td>Thresholds</td><td><code>{{ stored.thresholds | tojson }}</code></td></tr>
+      </table>
+    </div>
+    <div class="panel"><h4>Allowlist <span class="muted">(read-only, {{ settings.allowlist_path.name }})</span></h4><pre style="font-size:.75rem">{{ allowlist }}</pre></div>
+  </div>
+</div>
+{% endblock %}

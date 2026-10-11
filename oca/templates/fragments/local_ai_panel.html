@@ -1,0 +1,11 @@
+<div class="panel" id="local-ai" hx-get="/dash/local-ai" hx-trigger="every 15s" hx-swap="outerHTML">
+  <h4>LOCAL AI</h4>
+  <table class="localai">
+    <tr><td>Hardware</td><td>{{ local_ai.hardware }}</td></tr>
+    <tr><td>Model</td><td>{{ local_ai.model }} (via Ollama{% if local_ai.loaded %} · loaded{% elif local_ai.loaded is false %} · idle{% endif %})</td></tr>
+    <tr><td>Inference</td><td class="big">100% LOCAL</td></tr>
+    <tr><td>Cloud LLM requests</td><td>0</td></tr>
+    <tr><td>Infrastructure data uploaded</td><td>0 bytes</td></tr>
+    <tr><td>Ticketing sync (Jira)</td><td>{% if local_ai.jira.get('base_url') %}metadata only · {{ local_ai.bytes_sent }} bytes{% else %}not connected · 0 bytes external{% endif %}</td></tr>
+  </table>
+</div>

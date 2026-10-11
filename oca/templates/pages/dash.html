@@ -1,0 +1,35 @@
+{% extends "base.html" %}{% block title %}Dashboard{% endblock %}
+{% block content %}
+<div class="grid">
+  <div>
+    {% include "fragments/local_ai_panel.html" %}
+    <div class="kpi">
+      <div class="panel"><div class="num">{{ open_tickets | length }}</div><div class="muted">open tickets</div></div>
+      <div class="panel"><div class="num">{{ checks | selectattr("last_ok", "equalto", false) | list | length }}</div><div class="muted">failing checks</div></div>
+      <div class="panel"><div class="num">{{ deployments | length }}</div><div class="muted">recent deployments</div></div>
+    </div>
+  </div>
+  <div>
+    <div class="panel">
+      <h4>Company under test{% if dry %} <span class="badge">dry mode · FakeRunner</span>{% endif %}</h4>
+      {% if dry %}
+      <p class="muted">No Docker here: the fake company models driftwood's two incidents deterministically.</p>
+      <div class="actions">
+        <form method="post" action="/dash/inject"><input type="hidden" name="incident" value="timeout"><button>INJECT INCIDENT: timeout</button></form>
+        <form method="post" action="/dash/inject"><input type="hidden" name="incident" value="loyalty"><button class="secondary">INJECT INCIDENT: loyalty</button></form>
+        <form method="post" action="/dash/reset"><button class="outline secondary">Reset company</button></form>
+      </div>
+      {% if runner_state %}<p class="muted" style="margin-top:.6rem">incident: <code>{{ runner_state.effective_incident or "none" }}</code> · version {{ runner_state.version }} · sha {{ runner_state.sha }} · sandbox {{ "up" if runner_state.sandbox.up else "down" }}</p>{% endif %}
+      {% else %}
+      <p class="muted">Real mode: production is the driftwood clone at <code>{{ settings.fakeco_root }}</code>. Trigger the demo with <code>ops/inject.sh timeout</code> there.</p>
+      {% endif %}
+    </div>
+    <div class="panel">
+      <h4>Health checks</h4>
+      <table class="compact">{% for c in checks if c.enabled %}<tr><td>{{ c.name }}</td><td>{% if c.last_result %}<span class="badge {{ 'ok' if c.last_ok else 'bad' }}">{{ "ok" if c.last_ok else "FAIL" }}</span>{% else %}<span class="muted">pending</span>{% endif %}</td><td class="muted">{{ c.last_result.detail if c.last_result else "" }}</td></tr>{% endfor %}</table>
+    </div>
+  </div>
+</div>
+<h4>Current tickets</h4>
+{% with tickets=tickets, status_filter=None %}{% include "fragments/ticket_table.html" %}{% endwith %}
+{% endblock %}

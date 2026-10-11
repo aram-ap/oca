@@ -1,0 +1,8 @@
+[tool.pytest.ini_options]
+testpaths = ["tests", "models/tests"]
+pythonpath = ["."]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.pyright]
+extraPaths = ["."]

@@ -1,0 +1,6 @@
+{% extends "base.html" %}{% block title %}Deployments{% endblock %}
+{% block content %}
+<h3>Past deployments</h3>
+<p class="muted">Every executed action with its evidence. Restore returns production to the backup taken before that deployment.</p>
+{% include "fragments/deployment_table.html" %}
+{% endblock %}

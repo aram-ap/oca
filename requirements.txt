@@ -1,0 +1,12 @@
+# Single root requirements for oca/ (platform) and models/ (agents; stdlib-only at runtime).
+fastapi>=0.109
+uvicorn>=0.27
+pydantic>=2.6
+httpx>=0.26
+aiosqlite>=0.20
+jinja2>=3.1
+pyyaml>=6.0
+itsdangerous>=2.1
+python-multipart>=0.0.9
+pytest>=8
+anyio>=4

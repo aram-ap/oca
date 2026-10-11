@@ -67,7 +67,7 @@ class OllamaClient:
             ) from exc
         except (URLError, TimeoutError, OSError) as exc:
             raise OllamaError(
-                "Cannot reach Ollama or request timed out; check the service and OCE_LLM_TIMEOUT_S"
+                "Cannot reach Ollama or request timed out; check the service and OCA_LLM_TIMEOUT_S"
             ) from exc
         except (ValueError, UnicodeError) as exc:
             raise OllamaError("Ollama returned invalid JSON") from exc

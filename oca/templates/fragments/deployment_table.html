@@ -1,0 +1,22 @@
+<div id="deployment-table" hx-get="/deployments" hx-trigger="every 10s" hx-swap="outerHTML">
+<table class="compact">
+  <thead><tr><th>Deployment</th><th>Ticket</th><th>Action</th><th>Args</th><th>Status</th><th>Backup</th><th>Started</th><th>Evidence</th><th></th></tr></thead>
+  <tbody>
+  {% for d in deployments %}
+  <tr>
+    <td><strong>{{ d.id }}</strong></td>
+    <td>{% if d.ticket_id %}<a href="/tickets/{{ d.ticket_id }}">{{ d.ticket_id }}</a>{% endif %}</td>
+    <td><code>{{ d.action.value }}</code></td>
+    <td class="muted">{{ d.args | tojson }}</td>
+    <td><span class="badge status-{{ d.status.value }}">{{ d.status.value | replace("_"," ") }}</span></td>
+    <td>{% if d.backup_ref %}<code>{{ d.backup_ref }}</code>{% else %}—{% endif %}</td>
+    <td class="muted">{{ d.started_at | dt }}</td>
+    <td class="muted">{% if d.evidence.risk_score is defined %}risk {{ d.evidence.risk_score }} · {{ d.evidence.guardian_decision }}{% endif %}{% if d.evidence.reason %}{{ d.evidence.reason }}{% endif %}</td>
+    <td>{% if d.backup_ref and d.status.value in ("succeeded", "failed") %}
+      <form hx-post="/deployments/{{ d.id }}/restore" hx-target="#deployment-table" hx-swap="outerHTML" hx-confirm="Restore production to the backup taken before {{ d.id }}?" style="margin:0">
+        <button class="outline secondary" style="padding:.15rem .6rem">Restore Backup</button></form>{% endif %}</td>
+  </tr>
+  {% else %}<tr><td colspan="9" class="muted">No deployments yet.</td></tr>{% endfor %}
+  </tbody>
+</table>
+</div>

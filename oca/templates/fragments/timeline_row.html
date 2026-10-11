@@ -1,0 +1,69 @@
+{% set p = e.payload %}
+<li class="actor-{{ e.actor.value }} type-{{ e.type.value }}" id="event-{{ e.id }}">
+  <div class="meta">{{ e.ts | ts }} · {{ e.actor.value }} · {{ e.type.value }}</div>
+  {% if e.type.value == "detected" %}
+    <strong>Incident detected</strong> by {{ p.check }}: {{ p.detail }}
+  {% elif e.type.value == "reported" %}
+    <strong>Reported</strong>{% if p.external_ref %} from {{ p.external_ref.system }} {{ p.external_ref.key }}{% endif %}: {{ p.description or p.title }}
+  {% elif e.type.value == "check_failed" %}
+    <span class="muted">{{ p.check }} still failing: {{ p.detail }}</span>
+  {% elif e.type.value == "status_change" %}
+    <span class="muted">status</span> {{ p["from"] | replace("_"," ") }} → <span class="badge status-{{ p.to }}">{{ p.to | replace("_"," ") }}</span>{% if p.note %} <span class="muted">— {{ p.note }}</span>{% endif %}
+  {% elif e.type.value == "finding" %}
+    <code>{{ p.tool }}</code>{% if p.arguments %} <span class="muted">{{ p.arguments | tojson if p.arguments is mapping else p.arguments }}</span>{% endif %}
+    {% if p.ok is false or p.applied is false %}<span class="badge bad">failed</span>{% endif %}
+    {% if p.evidence_ref %}<span class="muted">→ {{ p.evidence_ref }}</span>{% endif %}
+    {% if p.tool == "apply_patch" and p.applied %} applied to <code>{{ p.branch }}</code> ({{ p.files_changed | join(", ") }}){% elif p.tool == "apply_patch" %} <span class="muted">{{ p.error }}</span>{% endif %}
+    {% if p.tool == "run_loadtest" %} {{ p.phase }}: error rate {{ p.error_rate_pct }}% · p95 {{ p.p95_ms }} ms{% endif %}
+    {% if p.tool == "run_tests" %} tests {{ "passed" if p.passed else (p.failed ~ " failed") }}{% endif %}
+  {% elif e.type.value == "diagnosis" %}
+    {% set d = p.diagnosis %}
+    <strong>ROOT CAUSE</strong> <span class="badge">confidence {{ (d.confidence * 100) | round | int }}%</span>
+    <p style="margin:.3rem 0">{{ d.diagnosis }}</p>
+    {% if d.evidence_refs %}<div class="muted">Evidence: {% for r in d.evidence_refs %}<code>{{ r }}</code> {% endfor %}</div>{% endif %}
+    {% if d.unresolved_questions %}<div class="muted">Open questions: {{ d.unresolved_questions | join("; ") }}</div>{% endif %}
+  {% elif e.type.value == "patch" %}
+    {% set f = p.patch %}
+    <strong>Patch proposed</strong> on <code>{{ f.patch_ref }}</code> · reproduced {{ "✓" if f.reproduced else "✗" }} · passed {{ "✓" if f.passed else "✗" }}
+    {% if f.diff and f.diff != "none" %}<details><summary>diff</summary><pre>{{ f.diff }}</pre></details>{% endif %}
+  {% elif e.type.value == "sandbox_result" %}
+    <strong>Sandbox {{ p.phase }}</strong> ({{ p.sandbox_run_id }}){% if p.phase == "before" %}: incident {{ "reproduced ✓" if p.reproduced else "NOT reproduced ✗" }}{% else %}: fix {{ "proven ✓" if p.passed else "NOT proven ✗" }}{% endif %}
+    <table class="compact" style="margin:.4rem 0 0;width:auto">
+      <tr><th></th><th>Baseline</th><th>Before fix</th><th>After fix</th></tr>
+      <tr><td>Error rate</td><td>{{ p.baseline.error_rate_pct if p.baseline else "—" }}%</td><td>{{ p.before.error_rate_pct if p.before else "—" }}%</td><td>{{ p.after.error_rate_pct if p.after else "—" }}{% if p.after %}%{% endif %}</td></tr>
+      <tr><td>P95</td><td>{{ p.baseline.p95_latency_ms if p.baseline else "—" }} ms</td><td>{{ p.before.p95_ms if p.before else "—" }} ms</td><td>{{ p.after.p95_ms if p.after else "—" }}{% if p.after %} ms{% endif %}</td></tr>
+      <tr><td>Tests</td><td>PASS</td><td>—</td><td>{% if p.tests %}{{ "PASS" if p.tests.passed else "FAIL (" ~ p.tests.failed ~ ")" }}{% else %}—{% endif %}</td></tr>
+    </table>
+  {% elif e.type.value == "review" %}
+    {% set r = p.review %}
+    <strong>RELEASE REVIEW</strong> <span class="badge {{ 'ok' if r.decision == 'APPROVE' else 'bad' }}">{{ r.decision }}</span> <span class="badge">risk {{ r.risk_score }}/100</span>
+    <p style="margin:.3rem 0">{{ r.justification }}</p>
+    {% if r.policy_concerns %}<div class="muted">Concerns: {{ r.policy_concerns | join("; ") }}</div>{% endif %}
+  {% elif e.type.value == "action_request" %}
+    <strong>Action requested</strong>: <code>{{ p.action }}</code> {{ p.args | tojson }}
+  {% elif e.type.value == "gate_decision" %}
+    <strong>COMMAND GATE</strong> <span class="badge status-{{ 'denied' if p.status == 'denied' else 'awaiting_approval' }}">{{ p.status | replace("_"," ") }}</span>
+    <ul class="checklist">{% for c in p.checks %}<li class="{{ 'ok' if c.ok else ('fail' if c.ok is false else 'skip') }}">{{ c.n }}. {{ c.name | replace("_"," ") }} — {{ c.detail }}</li>{% endfor %}</ul>
+  {% elif e.type.value == "human_decision" %}
+    <strong>Operator {{ p.decision }}d</strong>{% if p.override %} (override of a denied action){% endif %}{% if p.note %}: {{ p.note }}{% endif %}
+  {% elif e.type.value == "run" %}
+    <strong>{{ p.stage | replace("_"," ") }}</strong>{% if p.pct is defined %} · {{ p.pct }}%{% endif %}
+    {% if p.stage == "verify" %} run {{ p.run }}/{{ p.of }} {{ "✓" if p.ok else "✗" }} {{ p.detail }}{% elif p.stage == "monitor" %} {{ "✓" if p.ok else "✗" }} {{ p.detail }}{% elif p.stage == "snapshot" %} backup <code>{{ p.backup_ref }}</code>{% elif p.stage == "auto_restore" %} <span class="badge bad">{{ p.reason }}</span>{% endif %}
+  {% elif e.type.value == "resolved" %}
+    <strong>INCIDENT RESOLVED</strong> via {{ p.deployment_id }}
+    {% set m = p.mttr %}
+    <table class="mttr" style="width:auto;margin:.4rem 0 0">
+      <tr><td>Diagnosis</td><td>{{ m.diagnosis_s | duration }}</td></tr>
+      <tr><td>Fix generated</td><td>{{ m.fix_s | duration }}</td></tr>
+      <tr><td>Validation</td><td>{{ m.validation_s | duration }}</td></tr>
+      <tr><td>Deployment</td><td>{{ m.deployment_s | duration }}</td></tr>
+      <tr><td>MTTR</td><td>{{ m.total_s | duration }}</td></tr>
+    </table>
+  {% elif e.type.value == "rolled_back" %}
+    <strong>Rolled back</strong> {{ p.deployment_id }} → <code>{{ p.backup_ref }}</code>: {{ p.reason }}
+  {% elif e.type.value == "error" %}
+    <span class="badge bad">error</span> {{ p.where }}: {{ p.error }}
+  {% else %}
+    <pre>{{ p | pretty }}</pre>
+  {% endif %}
+</li>

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}OCA{% endblock %} · OCA</title>
+  <link rel="stylesheet" href="/static/pico.min.css">
+  <link rel="stylesheet" href="/static/oca.css">
+  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/htmx-sse.js" defer></script>
+  <script src="/static/alpine.min.js" defer></script>
+</head>
+<body>
+<nav class="container-fluid topbar">
+  <ul><li><strong>OCA</strong> <span class="muted">On-Call Agent</span></li></ul>
+  <ul>
+    {% for href, label in [("/dash","Dashboard"),("/tickets","Tickets"),("/deployments","Deployments"),("/logs","Logs"),("/health","Health"),("/settings","Settings")] %}
+    <li><a href="{{ href }}" {% if path.startswith(href) %}aria-current="page"{% endif %}>{{ label }}</a></li>
+    {% endfor %}
+    {% if user %}<li><form method="post" action="/logout" style="margin:0"><button class="outline secondary" style="padding:.2rem .7rem">Logout</button></form></li>{% endif %}
+  </ul>
+</nav>
+<main class="container-fluid">
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

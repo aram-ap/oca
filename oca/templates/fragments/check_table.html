@@ -1,0 +1,19 @@
+<div id="check-table" hx-get="/health" hx-trigger="every 10s" hx-swap="outerHTML">
+<table class="compact">
+  <thead><tr><th>Check</th><th>Service</th><th>Interval</th><th>Opens tickets</th><th>Last run</th><th>Result</th><th></th></tr></thead>
+  <tbody>
+  {% for c in checks %}
+  <tr>
+    <td><strong>{{ c.name }}</strong>{% if not c.enabled %} <span class="badge">disabled</span>{% endif %}</td>
+    <td>{{ c.service }}</td><td>{{ c.interval_s }} s</td><td>{{ "yes" if c.opens_ticket else "evidence only" }}</td>
+    <td class="muted">{{ c.last_run | dt if c.last_run else "never" }}</td>
+    <td>{% if c.last_result %}<span class="badge {{ 'ok' if c.last_ok else 'bad' }}">{{ "ok" if c.last_ok else "FAIL" }}</span> <span class="muted">{{ c.last_result.detail }}</span>{% endif %}</td>
+    <td class="actions">
+      <form hx-post="/health/{{ c.name }}/run" hx-target="#check-table" hx-swap="outerHTML"><button class="outline" style="padding:.15rem .6rem">Run now</button></form>
+      <form hx-post="/health/{{ c.name }}/toggle" hx-target="#check-table" hx-swap="outerHTML"><button class="outline secondary" style="padding:.15rem .6rem">{{ "Disable" if c.enabled else "Enable" }}</button></form>
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>

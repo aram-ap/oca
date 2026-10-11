@@ -18,7 +18,7 @@ class Agent:
     def __init__(self, *, role: str, prompt: str, output_schema: dict,
                  llm: Any, registry: ToolRegistry, max_steps: int = 12,
                  timeout_s: float = 300, tool_timeout_s: float = 30,
-                 max_observation_chars: int = 20000):
+                 max_observation_chars: int = 20000, on_observation=None):
         if type(max_steps) is not int or max_steps < 1:
             raise ValueError("max_steps must be a positive integer")
         if any(not math.isfinite(t) or t <= 0 for t in (timeout_s, tool_timeout_s)):
@@ -30,6 +30,7 @@ class Agent:
         self.llm, self.registry = llm, registry
         self.max_steps, self.timeout_s = max_steps, timeout_s
         self.tool_timeout_s, self.max_observation_chars = tool_timeout_s, max_observation_chars
+        self.on_observation = on_observation  # optional async callback(Observation); failures are ignored
 
     async def run(self, context: dict[str, Any]) -> AgentResult:
         """Every run has fresh history. Errors never imply approval or success."""
@@ -45,8 +46,13 @@ class Agent:
         }]
         observations = []
         schemas = self.registry.schemas(self.role)
+        repair = False  # after an invalid final answer, ask Ollama for schema-constrained JSON
         for step in range(1, self.max_steps + 1):
-            reply = await self.llm.chat(deepcopy(messages), tools=schemas)
+            if repair:
+                reply = await self.llm.chat(deepcopy(messages), tools=schemas, response_format=self.output_schema)
+                repair = False
+            else:
+                reply = await self.llm.chat(deepcopy(messages), tools=schemas)
             messages.append(deepcopy(reply))
             calls = reply.get("tool_calls", [])
             if calls:
@@ -67,7 +73,9 @@ class Agent:
                     content = json.dumps({"untrusted_tool_result": result}, allow_nan=False)
                     if len(content) > self.max_observation_chars:
                         raise AgentError("Tool output exceeds observation budget; request narrower evidence")
-                    observations.append(Observation(name, deepcopy(arguments), result, ok))
+                    observation = Observation(name, deepcopy(arguments), result, ok)
+                    observations.append(observation)
+                    await self._notify(observation)
                     messages.append({"role": "tool", "tool_name": name, "content": content})
                 continue
             try:
@@ -78,6 +86,7 @@ class Agent:
                     f"Invalid final output: {exc}. Return only JSON matching this schema: "
                     + json.dumps(self.output_schema)
                 )})
+                repair = True
                 continue
             # A narrative answer without a successful tool observation is not evidence.
             if not any(observation.ok for observation in observations):
@@ -86,3 +95,11 @@ class Agent:
                 continue
             return AgentResult(self.role, output, step, observations, messages)
         raise AgentError(f"{self.role} exhausted its {self.max_steps} steps")
+
+    async def _notify(self, observation: Observation) -> None:
+        if self.on_observation is None:
+            return
+        try:
+            await self.on_observation(self.role, observation)
+        except Exception:  # noqa: BLE001 - telemetry must never break the agent loop
+            pass

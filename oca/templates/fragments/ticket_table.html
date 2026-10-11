@@ -1,0 +1,20 @@
+<div id="ticket-table" hx-get="/tickets{% if status_filter %}?status={{ status_filter.value }}{% endif %}" hx-trigger="every 5s" hx-swap="outerHTML">
+<table class="compact">
+  <thead><tr><th>Ticket</th><th>Service</th><th>Title</th><th>Severity</th><th>Status</th><th>Source</th><th>Opened</th></tr></thead>
+  <tbody>
+  {% for t in tickets %}
+  <tr>
+    <td><a href="/tickets/{{ t.id }}"><strong>{{ t.id }}</strong></a></td>
+    <td>{{ t.service }}</td>
+    <td>{{ t.title }}</td>
+    <td><span class="badge sev-{{ t.severity.value }}">{{ t.severity.value }}</span></td>
+    <td><span class="badge status-{{ t.status.value }}">{{ t.status.value | replace("_"," ") }}</span></td>
+    <td>{{ t.source.value }}{% if t.external_ref %} · <a href="{{ t.external_ref.url }}">{{ t.external_ref.key }}</a>{% endif %}</td>
+    <td class="muted">{{ t.created_at | dt }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="7" class="muted">No tickets. {% if settings.runner == "dry" %}Inject an incident from the dashboard.{% else %}Run <code>ops/inject.sh timeout</code> in the driftwood clone.{% endif %}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>

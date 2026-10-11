@@ -13,7 +13,7 @@ class ToolError(RuntimeError):
 
 
 def validate(value: Any, schema: dict, path: str = "value") -> None:
-    """Validate the JSON schema subset used by OCE's registered tools/outputs.
+    """Validate the JSON schema subset used by OCA's registered tools/outputs.
 
     Supports object, array, string, boolean, integer, number, enum, required,
     additionalProperties, minimum/maximum and minLength. No coercion.
