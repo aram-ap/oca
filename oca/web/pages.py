@@ -12,6 +12,7 @@ from oca.api import deployments as deployments_api
 from oca.api.system import ollama_loaded, request_shutdown
 from oca.api.tickets import SSE_HEADERS, event_stream
 from oca.auth import Principal
+from oca.demo import INCIDENTS, ReinjectBusy, reinject_status, start_reinject
 from oca.integrations import IntegrationError, integration_status, save_integration_settings
 from oca.model import current_model, list_models, set_model
 from oca.schemas import Actor, EventType, Role, TicketEvent, TicketStatus
@@ -333,9 +334,26 @@ async def shutdown_server(request: Request, user: Principal = Depends(_user)):
 
 @router.post("/restart")
 async def restart_server(request: Request, user: Principal = Depends(_user)):
-    """Stop and re-exec the OCA process (dashboard button); the page polls /api/health and reloads."""
+    """Stop and re-exec the OCA process (settings page); the page polls /api/health and reloads."""
     request_shutdown(request.app, restart=True)
     return render(request, "pages/restart.html")
+
+
+@router.post("/restart-test")
+async def restart_test(request: Request, incident: str = Form("timeout"), user: Principal = Depends(_user)):
+    """Sidebar "Restart test": reset the company to baseline and inject the incident again (background)."""
+    if incident not in INCIDENTS:
+        raise HTTPException(422, "Unknown incident")
+    try:
+        await start_reinject(request.app, incident)
+    except ReinjectBusy:
+        pass  # show the running one
+    return render(request, "pages/restart_test.html", reinject=await reinject_status(request.app))
+
+
+@router.get("/restart-test/status")
+async def restart_test_status(request: Request, user: Principal = Depends(_user)):
+    return await reinject_status(request.app)
 
 
 @router.get("/settings")

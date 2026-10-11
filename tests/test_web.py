@@ -110,8 +110,7 @@ async def test_restart_button_relaunches_the_server(app, client, auth):
 
     stopped = asyncio.Event()
     app.state.stopper = stopped.set
-    for path in ("/settings", "/dash"):
-        assert 'action="/restart"' in (await client.get(path, headers=auth(Role.admin))).text
+    assert 'action="/restart"' in (await client.get("/settings", headers=auth(Role.admin))).text
     assert (await client.post("/api/restart", headers=auth(Role.engineer))).status_code == 403
     page = await client.post("/restart", headers=auth(Role.admin))
     assert page.status_code == 200 and "restarting" in page.text and "/api/health" in page.text
@@ -189,3 +188,29 @@ async def test_real_runner_topology_reports_sandbox_state(app, client, auth):
     assert "Running" in frag and "Status unavailable" not in frag
     dash = (await client.get("/dash", headers=cookie)).text
     assert "company-meta" not in dash  # the dry-only incident/version strip needs the fake company
+
+
+async def test_restart_test_button_resets_and_reinjects(app, client, auth):
+    from oca.demo import wait_reinject
+
+    cookie = auth(Role.admin)
+    # the sidebar button re-runs the injection; the settings page keeps the server restart
+    assert 'action="/restart-test"' in (await client.get("/dash", headers=cookie)).text
+    assert (await client.post("/restart-test", data={"incident": "nope"}, headers=cookie)).status_code == 422
+    assert (await client.post("/restart-test", data={"incident": "loyalty"})).status_code in (303, 401)
+
+    page = await client.post("/restart-test", data={"incident": "loyalty"}, headers=cookie)
+    assert page.status_code == 200 and "Restarting the" in page.text and "/restart-test/status" in page.text
+    state = await wait_reinject(app)
+    assert state["status"] == "done" and [s["step"] for s in state["steps"]] == ["ops/reset.sh", "ops/inject.sh loyalty"]
+    assert app.state.runner.incident == "loyalty"
+    status = (await client.get("/restart-test/status", headers=cookie)).json()
+    assert status["status"] == "done" and status["incident"] == "loyalty"
+    tickets = await app.state.db.list_tickets()
+    assert len(tickets) == 1 and tickets[0].service == "orders-api"
+    # a second run while one is open: the reset wipes the incident and the ticket now blocks a new one
+    page = await client.post("/restart-test", data={"incident": "timeout"}, headers=cookie)
+    assert tickets[0].id in page.text or "Heads up" in page.text
+    state = await wait_reinject(app)
+    assert state["status"] == "done" and app.state.runner.incident == "timeout"
+    assert len(await app.state.db.list_tickets()) == 1

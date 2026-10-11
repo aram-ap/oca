@@ -491,6 +491,16 @@ class FakeRunner:
                        f"git -C .sandbox commit -q -m {message!r}"]
         return PatchResult(applied=True, branch=branch, commit_sha=b["sha"], files_changed=list(info.files), stat=stat)
 
+    async def reinject(self, incident: str) -> list[dict[str, Any]]:
+        if incident not in INCIDENTS:
+            raise RunnerError(f"unknown incident {incident!r}")
+        self.reset()
+        self.calls.append("ops/reset.sh")
+        record = self.inject(incident)
+        self.calls.append(f"ops/inject.sh {incident}")
+        return [{"step": "ops/reset.sh", "rc": 0, "output": "reset to baseline"},
+                {"step": f"ops/inject.sh {incident}", "rc": 0, "output": f"deployed {record.git_sha}"}]
+
     async def sandbox_reset_branch(self, branch: str) -> bool:
         self.calls.append(f"git branch -D {branch}")
         return self.branches.pop(branch, None) is not None

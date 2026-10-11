@@ -480,7 +480,7 @@ Login
                                Integrations (Jira / Slack forms with Test connection), Shut down server
 ```
 
-The ticket page shows the live timeline plus an **Engineer's changes** panel: every applied patch with its coloured diff, and the complete log of shell commands the sandbox tools ran. Timeline rows for `set_config`, `create_migration` and `apply_patch` expand to the diff; `run_tests` rows show the pytest command and output tail. The **Shut down** button (sidebar and Settings) stops the OCA process gracefully after a confirm; production and the sandbox containers are left untouched.
+The ticket page shows the live timeline plus an **Engineer's changes** panel: every applied patch with its coloured diff, and the complete log of shell commands the sandbox tools ran. Timeline rows for `set_config`, `create_migration` and `apply_patch` expand to the diff; `run_tests` rows show the pytest command and output tail. The **Shut down** button (sidebar and Settings) stops the OCA process gracefully after a confirm; production and the sandbox containers are left untouched. The sidebar **Restart test** button re-runs the demo: it resets Driftwood to baseline and injects the `timeout` incident again (`ops/reset.sh` then `ops/inject.sh` in real mode, an in-memory reset + inject in dry mode) as a background task, and the page polls `/restart-test/status` until the incident is live. It does not touch OCA's tickets: an unresolved ticket for the service still blocks a new one, and the page says so.
 
 The MTTR card shown on a resolved ticket:
 

@@ -1,0 +1,30 @@
+{% extends "base.html" %}{% block title %}Restarting test{% endblock %}
+{% block content %}
+<h3>Restarting the <code>{{ reinject.incident }}</code> test</h3>
+<p>Driftwood is being reset to its healthy baseline and the incident is being shipped again through its normal deploy path. OCA's health checks will catch it and open a new ticket; nothing else is needed.</p>
+{% if reinject.blocking_ticket %}<p class="muted"><strong>Heads up:</strong> ticket <a href="/tickets/{{ reinject.blocking_ticket.id }}">{{ reinject.blocking_ticket.id }}</a> is still <strong>{{ reinject.blocking_ticket.status }}</strong>. The scheduler will not open a new ticket for this service until it is resolved: finish it, or mark it resolved from its page.</p>{% endif %}
+{% if reinject.cooldown_remaining_s %}<p class="muted">The last ticket resolved recently; the reopen cooldown has about {{ reinject.cooldown_remaining_s }} s left, so the new ticket may open a little after the incident is live.</p>{% endif %}
+<p class="muted" data-restart-status>{% if reinject.status == 'failed' %}Failed: {{ reinject.error }}{% else %}Resetting and injecting&hellip; this usually takes one to two minutes. This page moves to the tickets list when the incident is live.{% endif %}</p>
+<pre class="cmd-list" data-restart-steps>{% for step in reinject.steps %}$ {{ step.step }}
+{{ step.output }}
+{% endfor %}</pre>
+<p><a href="/tickets">Go to tickets now</a> · <a href="/dash">Overview</a></p>
+<script>
+(() => {
+  const status = document.querySelector('[data-restart-status]');
+  const steps = document.querySelector('[data-restart-steps]');
+  const poll = async () => {
+    try {
+      const r = await fetch('/restart-test/status', { cache: 'no-store' });
+      if (!r.ok) throw new Error(r.status);
+      const s = await r.json();
+      steps.textContent = (s.steps || []).map(x => '$ ' + x.step + '\n' + (x.output || '')).join('\n');
+      if (s.status === 'done') { status.textContent = 'Incident is live. Opening the tickets list…'; setTimeout(() => window.location.replace('/tickets'), 1500); return; }
+      if (s.status === 'failed') { status.textContent = 'Failed: ' + (s.error || 'unknown error'); return; }
+    } catch (e) {}
+    setTimeout(poll, 2000);
+  };
+  if ({{ 'true' if reinject.status == 'running' else 'false' }}) setTimeout(poll, 2000);
+})();
+</script>
+{% endblock %}

@@ -432,6 +432,19 @@ class SubprocessRunner:
         return PatchResult(applied=True, branch=branch, commit_sha=sha.strip(), files_changed=files.split(),
                            stat=(stat.strip() + f"\n(applied with {applied_with})"))
 
+    async def reinject(self, incident: str) -> list[dict[str, Any]]:
+        """What the demo does by hand: ``ops/reset.sh`` then ``ops/inject.sh <incident>`` in the company clone.
+
+        Both scripts redeploy the stack, so this takes a minute or two; the caller runs it in the background."""
+        if incident not in ("timeout", "loyalty"):
+            raise RunnerError(f"unknown incident {incident!r}")
+        steps = []
+        async with self._mutate:
+            for argv in (["ops/reset.sh"], ["ops/inject.sh", incident]):
+                rc, out, _ = await self._run(*argv, timeout=600)
+                steps.append({"step": " ".join(argv), "rc": rc, "output": out.strip()[-600:]})
+        return steps
+
     async def sandbox_reset_branch(self, branch: str) -> bool:
         """Delete the fix branch so a new attempt starts from the production sha, not from stale patches."""
         self._check_ref(branch)
