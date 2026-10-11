@@ -30,9 +30,13 @@
         <tr><td>Baseline (learned)</td><td><code>{{ stored.baseline | tojson }}</code></td></tr>
         <tr><td>Thresholds</td><td><code>{{ stored.thresholds | tojson }}</code></td></tr>
       </table>
+      <form method="post" action="/restart" style="margin:.6rem 0 0" onsubmit="return confirm('Restart the OCA server? Running pipelines stop and the process relaunches with the code on disk; production and the sandbox are left as they are.')">
+        <button type="submit" class="secondary outline" style="width:auto">Restart server</button>
+        <small class="muted">Stops this OCA process and relaunches it with the code on disk (after a <code>git pull</code>, for example).</small>
+      </form>
       <form method="post" action="/shutdown" style="margin:.6rem 0 0" onsubmit="return confirm('Shut down the OCA server? Running pipelines stop; production and the sandbox are left as they are.')">
         <button type="submit" class="secondary outline" style="width:auto">Shut down server</button>
-        <small class="muted">Stops this OCA process. Restart it from a terminal.</small>
+        <small class="muted">Stops this OCA process without relaunching it. Start it again from a terminal.</small>
       </form>
     </div>
     <div class="panel"><h4>Allowlist <span class="muted">(read-only, {{ settings.allowlist_path.name }})</span></h4><pre style="font-size:.75rem">{{ allowlist }}</pre></div>

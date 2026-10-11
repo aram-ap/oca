@@ -1,0 +1,22 @@
+{% extends "base.html" %}{% block title %}Restarting{% endblock %}
+{% block content %}
+<h3>OCA is restarting</h3>
+<p>Background pipelines are being cancelled and the server process is relaunching with the code currently on disk. Production services and the sandbox containers are not touched.</p>
+<p class="muted" data-restart-status>Waiting for the server to come back&hellip; this page reloads automatically.</p>
+<script>
+(() => {
+  const status = document.querySelector('[data-restart-status]');
+  const started = Date.now();
+  const poll = async () => {
+    try {
+      const r = await fetch('/api/health', { cache: 'no-store' });
+      if (r.ok) { window.location.replace('/dash'); return; }
+    } catch (e) {}
+    const s = Math.round((Date.now() - started) / 1000);
+    if (s > 90) status.textContent = 'The server has not come back after ' + s + ' s. Check its terminal or start it by hand (python -m oca.main).';
+    setTimeout(poll, 1500);
+  };
+  setTimeout(poll, 2000);
+})();
+</script>
+{% endblock %}

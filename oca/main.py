@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -133,8 +135,21 @@ def main() -> None:
     settings = Settings.from_env()
     # Dashboard SSE streams stay open indefinitely; without a graceful-shutdown timeout uvicorn would wait
     # for them forever after SIGTERM, leaving a process that no longer listens but keeps its scheduler running.
-    uvicorn.run(create_app(settings), host=settings.host, port=settings.port, log_level="info",
-                timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S)
+    app = create_app(settings)
+    config = uvicorn.Config(app, host=settings.host, port=settings.port, log_level="info",
+                            timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S)
+    app.state.server = uvicorn.Server(config)  # the dashboard's Shut down / Restart buttons flip should_exit
+    app.state.server.run()
+    if getattr(app.state, "restart_requested", False):
+        restart_process()
+
+
+def restart_process() -> None:
+    """Replace this process with a fresh ``python -m oca.main`` (same cwd, env and arguments), so the
+    dashboard's Restart button picks up pulled code without anyone at a terminal."""
+    argv = [sys.executable, "-m", "oca.main", *sys.argv[1:]]
+    logging.getLogger("oca.main").warning("restarting: %s", " ".join(argv))
+    os.execv(sys.executable, argv)
 
 
 if __name__ == "__main__":

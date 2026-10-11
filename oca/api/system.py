@@ -43,17 +43,26 @@ log = logging.getLogger("oca.system")
 SHUTDOWN_DELAY_S = 0.5
 
 
-def _default_stop() -> None:
-    os.kill(os.getpid(), signal.SIGTERM)  # uvicorn handles it: lifespan shutdown cancels tasks, then exits
+def _stop(app) -> None:
+    """Ask uvicorn to exit. ``main`` registers its ``uvicorn.Server`` on ``app.state.server``; flipping its
+    ``should_exit`` lets ``server.run()`` return normally so ``main`` can re-exec on restart. A SIGTERM would
+    not: uvicorn re-raises captured signals after its loop ends, which kills the process before we get control."""
+    server = getattr(app.state, "server", None)
+    if server is not None:
+        server.should_exit = True
+    else:
+        os.kill(os.getpid(), signal.SIGTERM)  # uvicorn handles it: lifespan shutdown cancels tasks, then exits
 
 
-def request_shutdown(app, delay: float = SHUTDOWN_DELAY_S) -> None:
-    """Stop the server shortly after the current response is sent. ``app.state.stopper`` overrides the signal."""
+def request_shutdown(app, delay: float = SHUTDOWN_DELAY_S, restart: bool = False) -> None:
+    """Stop the server shortly after the current response is sent. ``app.state.stopper`` overrides the signal.
+    With ``restart=True`` the entrypoint re-execs the same command once uvicorn has exited (see ``main``)."""
     if getattr(app.state, "shutting_down", False):
         return
     app.state.shutting_down = True
-    stopper = getattr(app.state, "stopper", None) or _default_stop
-    log.warning("shutdown requested from the dashboard; stopping in %.1fs", delay)
+    app.state.restart_requested = restart
+    stopper = getattr(app.state, "stopper", None) or (lambda: _stop(app))
+    log.warning("%s requested from the dashboard; stopping in %.1fs", "restart" if restart else "shutdown", delay)
     asyncio.get_running_loop().call_later(delay, stopper)
 
 
@@ -61,6 +70,12 @@ def request_shutdown(app, delay: float = SHUTDOWN_DELAY_S) -> None:
 async def shutdown(request: Request, _: Principal = Depends(require(Role.admin))):
     request_shutdown(request.app)
     return {"status": "shutting_down", "in_s": SHUTDOWN_DELAY_S}
+
+
+@router.post("/restart")
+async def restart(request: Request, _: Principal = Depends(require(Role.admin))):
+    request_shutdown(request.app, restart=True)
+    return {"status": "restarting", "in_s": SHUTDOWN_DELAY_S}
 
 
 @router.get("/health")

@@ -713,6 +713,7 @@ All JSON endpoints are under `/api` on port 8001. The browser uses the HTML rout
 | GET    | `/api/logs`                          | clients             | Ticket events across tickets                             |
 | GET/PUT | `/api/settings`                     | human (PUT)         | Approval mode, risk threshold, baseline, thresholds, blocklist, cooldown, time zone, model, Jira/Slack config (secrets masked on GET) |
 | POST   | `/api/shutdown`                      | human               | Stop the OCA process (SIGTERM after 0.5 s; lifespan shutdown runs) |
+| POST   | `/api/restart`                       | human               | Stop the OCA process and re-exec `python -m oca.main` with the code on disk (dashboard Restart button) |
 | GET    | `/api/stats/local-ai`                | dashboard           | Cloud requests (0), bytes uploaded (0), ticketing bytes sent, model, hardware |
 | POST   | `/api/dev/inject`, `/api/dev/reset`, GET `/api/dev/state` | human | Dry mode only: drive the fake company          |
 | GET    | `/api/integrations`, PUT `/api/integrations/{name}`, POST `/api/integrations/{name}/test`, GET `/api/integrations/outbox` | dashboard | Integration status, configure, test connection, outbox queue |

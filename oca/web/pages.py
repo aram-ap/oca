@@ -72,7 +72,12 @@ async def topology_fragment(request: Request, user: Principal = Depends(_user)):
 
 def _runner_state(request: Request) -> dict[str, Any] | None:
     runner = request.app.state.runner
-    return runner.describe() if hasattr(runner, "describe") else None
+    if hasattr(runner, "describe"):  # dry mode: the fake company reports incident, version and sandbox
+        return runner.describe()
+    # Real mode has no synthetic company state, but the sandbox manager knows whether an OCA-managed
+    # sandbox is up right now; without this the topology's Sandbox node read "Status unavailable".
+    active = getattr(getattr(request.app.state, "sandbox", None), "active_ticket", None)
+    return {"sandbox": {"up": active is not None, "ticket": active}}
 
 
 async def _local_ai(request: Request) -> dict[str, Any]:
@@ -324,6 +329,13 @@ async def shutdown_server(request: Request, user: Principal = Depends(_user)):
     """Stop the OCA process (dashboard button). Production and the Driftwood stack are left as they are."""
     request_shutdown(request.app)
     return render(request, "pages/shutdown.html")
+
+
+@router.post("/restart")
+async def restart_server(request: Request, user: Principal = Depends(_user)):
+    """Stop and re-exec the OCA process (dashboard button); the page polls /api/health and reloads."""
+    request_shutdown(request.app, restart=True)
+    return render(request, "pages/restart.html")
 
 
 @router.get("/settings")

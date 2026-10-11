@@ -105,6 +105,34 @@ async def test_shutdown_button_stops_the_server(app, client, auth):
     await asyncio.wait_for(stopped.wait(), 3)
 
 
+async def test_restart_button_relaunches_the_server(app, client, auth):
+    import asyncio
+
+    stopped = asyncio.Event()
+    app.state.stopper = stopped.set
+    for path in ("/settings", "/dash"):
+        assert 'action="/restart"' in (await client.get(path, headers=auth(Role.admin))).text
+    assert (await client.post("/api/restart", headers=auth(Role.engineer))).status_code == 403
+    page = await client.post("/restart", headers=auth(Role.admin))
+    assert page.status_code == 200 and "restarting" in page.text and "/api/health" in page.text
+    assert app.state.restart_requested is True
+    await asyncio.wait_for(stopped.wait(), 5)
+    # a second request while stopping is a no-op and must not flip the restart flag
+    assert (await client.post("/api/shutdown", headers=auth(Role.admin))).json()["status"] == "shutting_down"
+    assert app.state.restart_requested is True
+
+
+def test_restart_process_reexecs_the_module(monkeypatch):
+    import sys
+    from oca.main import restart_process
+
+    calls = []
+    monkeypatch.setattr("oca.main.os.execv", lambda exe, argv: calls.append((exe, argv)))
+    monkeypatch.setattr(sys, "argv", ["/x/oca/main.py", "--flag"])
+    restart_process()
+    assert calls == [(sys.executable, [sys.executable, "-m", "oca.main", "--flag"])]
+
+
 async def test_model_switch_run_all_and_pagers(app, client, auth):
     cookie = auth(Role.admin)
     # Model: dropdown on Settings, switch takes effect for the next pipeline launch and is persisted.
@@ -138,3 +166,26 @@ async def test_model_switch_run_all_and_pagers(app, client, auth):
     detail = await client.get(f"/tickets/{ticket.id}", headers=cookie)
     assert 'data-pager="ul.timeline > li"' in detail.text and 'data-pager-start="last"' in detail.text
     assert (await client.get("/static/pager.js")).status_code == 200
+
+
+async def test_real_runner_topology_reports_sandbox_state(app, client, auth):
+    """Runners without describe() (real mode) must still tell the topology whether the sandbox is up."""
+
+    class NoDescribe:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            if name == "describe":
+                raise AttributeError(name)
+            return getattr(self._inner, name)
+
+    app.state.runner = NoDescribe(app.state.runner)
+    cookie = auth(Role.admin)
+    frag = (await client.get("/dash/topology", headers=cookie)).text
+    assert "Status unavailable" not in frag and "Stopped" in frag
+    app.state.sandbox.active_ticket = "INC-0001"
+    frag = (await client.get("/dash/topology", headers=cookie)).text
+    assert "Running" in frag and "Status unavailable" not in frag
+    dash = (await client.get("/dash", headers=cookie)).text
+    assert "company-meta" not in dash  # the dry-only incident/version strip needs the fake company
