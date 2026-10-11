@@ -3,8 +3,8 @@
 {% set enabled = checks | selectattr("enabled") | list %}
 {% set failing = enabled | selectattr("last_result") | selectattr("last_ok", "equalto", false) | list %}
 {% set pending = enabled | rejectattr("last_result") | list %}
-<header class="page-heading"><div><p class="eyebrow">OPERATIONS / OVERVIEW</p><h1>Infrastructure command center</h1><p class="muted">Your local AI team. Your infrastructure. One live view.</p></div><span class="environment-label"><span class="status-dot {{ 'warning' if dry else '' }}"></span>{{ 'Simulation' if dry else 'Production' }}</span></header>
-<div class="map-toolbar"><div><span class="toolbar-label">SYSTEM TOPOLOGY</span><span class="muted">ASUS Ascent GX10 · Local inference</span></div><button type="button" class="signal-toggle" data-toggle-signals aria-pressed="false">Pause signals</button></div>
+<header class="page-heading"><div><p class="eyebrow">OCA / OPERATIONS</p><h1>Your response team, at a glance.</h1><p class="muted">Explore your agent campus and the company it protects.</p></div><span class="environment-label"><span class="status-dot {{ 'warning' if dry else '' }}"></span>{{ 'Simulation' if dry else 'Production' }}</span></header>
+<div class="map-toolbar"><div><span class="toolbar-label">LIVE CAMPUS</span><span class="muted">OCA hub · Agent team · Connected company</span></div><div class="map-actions"><button type="button" class="signal-toggle" data-map-view aria-pressed="true">3D view</button><button type="button" class="signal-toggle" data-toggle-signals aria-pressed="false">Pause signals</button></div></div>
 {% include "fragments/topology.html" %}
 <div class="summary-strip"><div><span class="status-dot {{ 'danger' if failing else 'warning' if pending or not enabled else '' }}"></span><strong>{{ 'Checks need attention' if failing else 'Waiting for health checks' if pending or not enabled else 'All enabled checks passing' }}</strong></div><a href="/health">View system health ↗</a></div>
 <section class="metrics-grid" aria-label="Recent activity summary">

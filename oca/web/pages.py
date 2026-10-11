@@ -56,7 +56,7 @@ async def dash(request: Request, user: Principal = Depends(_user)):
     return render(request, "pages/dash.html", tickets=tickets, open_tickets=open_tickets, checks=checks,
                   deployments=deployments, local_ai=local_ai,
                   dry=settings.runner == "dry", runner_state=runner_state,
-                  topology=topology_context(checks, tickets, local_ai, runner_state))
+                  topology=topology_context(checks, tickets, local_ai, runner_state, settings))
 
 
 @router.get("/dash/topology")
@@ -64,7 +64,7 @@ async def topology_fragment(request: Request, user: Principal = Depends(_user)):
     db = request.app.state.db
     return render(request, "fragments/topology.html", topology=topology_context(
         await db.list_checks(), await db.list_tickets(limit=10),
-        await _local_ai(request), _runner_state(request)), dry=request.app.state.settings.runner == "dry")
+        await _local_ai(request), _runner_state(request), request.app.state.settings), dry=request.app.state.settings.runner == "dry")
 
 
 def _runner_state(request: Request) -> dict[str, Any] | None:

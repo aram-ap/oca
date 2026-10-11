@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from oca.schemas import Role
+from oca.config import Settings
 from oca.web.topology import topology_context
 
 
@@ -48,6 +49,30 @@ def test_agent_activity_follows_recorded_ticket_stage():
     assert nodes["orchestrator"]["state"] == "active"
 
 
+def test_company_connection_distinguishes_simulation_configuration_and_verified_checks():
+    model = {"loaded": True, "model": "nemotron3:33b"}
+    assert topology_context([], [], model, None, Settings(runner="dry"))["company"]["label"] == "Simulated connection"
+    real = Settings(runner="real")
+    configured = topology_context([], [], model, None, real)
+    assert configured["company"]["state"] == "pending"
+    records = []
+    for service in ("frontend", "orders-api"):
+        record = check()
+        record.name = f"endpoint_check:{service}"
+        record.service = service
+        records.append(record)
+    connected = topology_context(records, [], model, None, real)
+    assert connected["company"]["label"] == "Endpoints responding"
+    assert connected["company"]["state"] == "healthy"
+    assert {s["key"] for s in connected["company"]["services"]} == {"frontend", "orders-api", "postgres", "redis"}
+    database = next(s for s in connected["company"]["services"] if s["key"] == "postgres")
+    assert database["state"] == "pending"  # Healthy app endpoints do not prove DB health.
+    records[0].last_ok = False
+    assert topology_context(records, [], model, None, real)["company"]["state"] == "danger"
+    records[0].last_ok = True
+    assert topology_context(records[:1], [], model, None, real)["company"]["state"] == "pending"
+
+
 @pytest.mark.anyio
 async def test_map_fragment_auth_and_incident_refresh(app, client, auth):
     assert (await client.get("/dash/topology")).status_code == 303
@@ -64,5 +89,8 @@ async def test_map_fragment_auth_and_incident_refresh(app, client, auth):
     dash = await client.get("/dash", headers=cookie)
     assert 'data-toggle-signals' in dash.text
     assert '/static/command-center.css' in dash.text
+    assert 'class="map-world"' in dash.text and 'class="cube-front"' in dash.text
+    assert 'data-map-view' in dash.text and 'data-camera-action="reset"' in dash.text
+    assert 'data-node="postgres"' in dash.text and 'data-node="redis"' in dash.text
     for path in ("/static/command-center.css", "/static/dashboard.js"):
         assert (await client.get(path)).status_code == 200

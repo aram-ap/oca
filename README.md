@@ -920,3 +920,30 @@ Recorded so nobody re-litigates them by accident. Any can be overturned by the t
   support, and an interrupted-connection state that stops signal animations.
 - Seven targeted web/topology tests pass and JavaScript syntax checks pass.
   Visual browser verification remains pending because no browser is connected.
+
+### 3D company topology update
+
+- Added a CSS 3D infrastructure scene with raised nodes, drag-to-rotate controls,
+  zoom controls, reset, and a 2D view toggle. Camera settings persist during map
+  refreshes; signal animations retain pause and reduced-motion support.
+- Added a Driftwood company boundary, service nodes, and a connection indicator.
+  Dry mode shows a simulated connection. Real mode derives endpoint status from
+  recorded checks; services without direct checks remain unknown.
+- Eight targeted web/topology tests and the JavaScript syntax check pass.
+  The local dry-mode preview responds successfully; visual browser review is
+  pending because no browser is connected.
+
+- Fixed the 3D view control selecting the document root instead of its button,
+  which replaced the dashboard with plain text. Scoped button selectors preserve
+  the page, and a versioned script URL ensures browsers load the correction.
+
+- Added building facades with windows, entrances, rooftop equipment and varied
+  heights. Suspended cables have shaded edges, ground shadows and vertical roof
+  connections; the 2D toggle flattens the scene. Status colors and signal pause
+  controls continue to use recorded health and activity.
+
+- Redesigned the map as an OCA operations campus: a central orchestrator hub,
+  surrounding agent and support buildings, a response plaza, landscaping, and
+  a separate Driftwood district connected by a curved suspended bridge. Added
+  an agent roster to the insights panel. This presentation is illustrative;
+  health, activity, API routes and deployment controls retain their behavior.

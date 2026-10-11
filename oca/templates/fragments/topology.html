@@ -1,42 +1,52 @@
-<section id="system-map" class="system-map" hx-get="/dash/topology" hx-trigger="every 5s" hx-swap="outerHTML" hx-request='{"timeout":8000}' aria-label="Infrastructure topology and latest status">
+<section id="system-map" class="system-map" hx-get="/dash/topology" hx-trigger="every 5s" hx-swap="outerHTML" hx-request='{"timeout":8000}' aria-label="Infrastructure topology and company connection">
   <div class="topology-stage">
-    <div class="canvas-caption"><span class="status-dot {{ 'danger' if topology.overall == 'danger' else 'warning' if topology.overall == 'pending' else '' }}"></span>{{ topology.overall_label }}<span class="map-mode">{{ 'SIMULATED INFRASTRUCTURE' if dry else 'CONNECTED INFRASTRUCTURE' }}</span></div>
+    <div class="canvas-caption"><span class="status-dot {{ 'danger' if topology.overall == 'danger' else 'warning' if topology.overall == 'pending' else '' }}"></span>{{ topology.overall_label }}<span class="map-mode">{{ 'SIMULATED INFRASTRUCTURE' if dry else 'REAL INFRASTRUCTURE CONFIGURED' }}</span></div>
     <div class="stale-message" role="status">Connection interrupted · displaying last recorded status</div>
-    <svg class="topology-svg" viewBox="80 10 940 755" role="img" aria-labelledby="topology-title topology-description">
-      <title id="topology-title">Local incident response system</title>
-      <desc id="topology-description">Nemotron connects to Investigator, Engineer and Guardian. The orchestrator uses the Main Process API and database to coordinate production, sandbox and observability. Animated lines illustrate connections; colors reflect recorded status, not network traffic.</desc>
-      <defs>
-        <pattern id="map-grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#29414c" stroke-width=".6"/></pattern>
-        <linearGradient id="node-face" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#1a2c37"/><stop offset="1" stop-color="#101d27"/></linearGradient>
-        <filter id="map-shadow" x="-40%" y="-40%" width="180%" height="200%"><feDropShadow dx="0" dy="12" stdDeviation="10" flood-color="#020a10" flood-opacity=".65"/></filter>
-      </defs>
-      <path class="map-floor" d="M115 555L550 325L985 555L550 770Z" fill="url(#map-grid)" stroke="#2a414d" stroke-width="1"/>
-      <path class="map-floor-outline" d="M115 555V570L550 785L985 570V555 M550 770V785" fill="none" stroke="#1c333f"/>
-      <text class="layer-label" x="105" y="95">01 / INFERENCE</text><text class="layer-label" x="105" y="380">02 / CONTROL</text><text class="layer-label" x="105" y="730">03 / INFRASTRUCTURE</text>
-      {% for wire in topology.wires %}<g class="wire state-{{ wire.state }}"><path class="wire-track" d="{{ wire.path }}"/><path class="wire-signal" d="{{ wire.path }}" style="animation-delay: -{{ loop.index % 4 }}s"/></g>{% endfor %}
-      {% for node in topology.nodes %}
-      <a href="{{ node.href }}" class="topology-node state-{{ node.state }}" data-node="{{ node.key }}" aria-label="{{ node.title }}: {{ node.label }}">
-        <g transform="translate({{ node.x }} {{ node.y }})" filter="url(#map-shadow)">
-          <path class="node-base" d="M0 12H180V88L170 98H10L0 88Z"/>
-          <rect class="node-face" width="180" height="88" rx="10" fill="url(#node-face)"/>
-          <path class="node-topline" d="M12 1H168"/>
-          <circle class="node-dot" cx="16" cy="21" r="3"/>
-          <text class="node-title" x="27" y="26">{{ node.title }}</text>
-          <text class="node-subtitle" x="15" y="46">{{ node.subtitle }}</text>
-          <text class="node-status" x="15" y="70">{{ node.label }}</text>
-          <path class="node-port" d="M76 89H104"/>
-        </g>
-      </a>{% endfor %}
-    </svg>
+    <div class="company-connection state-{{ topology.company.state }}"><span class="company-symbol" aria-hidden="true">▥</span><div><strong>{{ topology.company.name }}</strong><small>{{ topology.company.label }}</small></div><span class="company-connection-line" aria-hidden="true"></span><span class="connection-target">OCA</span></div>
+    <div class="map-camera" aria-label="Interactive 3D system map. Drag the background to rotate, or use the view controls.">
+      <div class="map-world">
+        <div class="world-floor" aria-hidden="true"></div>
+        <svg class="world-wires" viewBox="0 0 1500 1030" role="img" aria-labelledby="topology-title topology-description">
+          <title id="topology-title">OCA connected to Driftwood infrastructure</title>
+          <desc id="topology-description">An OCA operations campus centered on the orchestrator hub, surrounded by agent buildings and support facilities. A floating bridge links the campus to a separate Driftwood company district. This is an illustrative dashboard map; colors reflect recorded health and ticket stage, not measured traffic.</desc>
+          <defs><radialGradient id="campus-ground"><stop stop-color="#294c56"/><stop offset="1" stop-color="#172c39"/></radialGradient><radialGradient id="company-ground"><stop stop-color="#23453f"/><stop offset="1" stop-color="#132c2d"/></radialGradient></defs>
+          <ellipse class="campus-island" cx="500" cy="525" rx="460" ry="485" fill="url(#campus-ground)"/>
+          <rect class="company-island" x="980" y="110" width="495" height="855" rx="90" fill="url(#company-ground)"/>
+          <ellipse class="campus-walkway" cx="520" cy="510" rx="340" ry="350"/>
+          <ellipse class="hub-plaza" cx="575" cy="494" rx="150" ry="120"/>
+          <path class="campus-road" d="M590 610 Q625 790 860 810 Q1020 825 1160 640"/>
+          <path class="district-walkway" d="M1110 295 Q1400 350 1280 605 Q1080 710 1360 835"/>
+          <text class="district-title" x="430" y="85">OCA OPERATIONS CAMPUS</text>
+          <text class="district-title company-title" x="1020" y="150">DRIFTWOOD DISTRICT</text>
+          <text class="district-subtitle" x="1030" y="174">{{ topology.company.label }}</text>
+          <text class="plaza-label" x="510" y="655">RESPONSE PLAZA</text>
+        </svg>
+        {% for x, y in [(95,240),(380,245),(870,170),(390,625),(85,685),(690,870),(1030,415),(1400,530),(1010,895),(1400,215)] %}<span class="campus-tree" style="left:{{ x }}px;top:{{ y }}px" aria-hidden="true"><i></i></span>{% endfor %}
+        <svg class="cable-shadows" viewBox="0 0 1500 1030" aria-hidden="true">{% for wire in topology.wires %}<path d="{{ wire.path }}"/>{% endfor %}</svg>
+        <svg class="floating-cables" viewBox="0 0 1500 1030" aria-hidden="true">
+          {% for wire in topology.wires %}<g class="wire state-{{ wire.state }} {{ 'company-bridge' if wire.bridge else '' }}"><path class="cable-shell" d="{{ wire.path }}"/><path class="wire-track" d="{{ wire.path }}"/><path class="cable-highlight" d="{{ wire.path }}"/><path class="wire-signal" d="{{ wire.path }}" style="animation-delay: -{{ loop.index % 4 }}s"/></g>{% endfor %}
+        </svg>
+        {% for wire in topology.wires %}{% for port in wire.ports %}<span class="wire cable-drop state-{{ wire.state }}" style="--port-x:{{ port.x }}px;--port-y:{{ port.y }}px;--drop:{{ port.drop }}px" aria-hidden="true"></span>{% endfor %}{% endfor %}
+        {% for node in topology.nodes %}
+        <a href="{{ node.href }}" class="scene-node state-{{ node.state }}" data-node="{{ node.key }}" style="--node-x:{{ node.x }}px;--node-y:{{ node.y }}px;--building-height:{{ node.height }}px" aria-label="{{ node.title }}: {{ node.label }}">
+          <span class="cube-front" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span class="cube-right" aria-hidden="true"></span><span class="building-back" aria-hidden="true"></span><span class="building-left" aria-hidden="true"></span>
+          <span class="cube-top"><span class="cube-heading"><i class="node-led" aria-hidden="true"></i><strong>{{ node.title }}</strong></span><small>{{ node.subtitle }}</small><span class="cube-status">{{ node.label }}</span></span>
+          <span class="roof-equipment" aria-hidden="true"></span>
+        </a>{% endfor %}
+      </div>
+    </div>
+    <div class="scene-controls" role="group" aria-label="Map view controls"><span class="map-help">Drag background to rotate</span><button type="button" data-camera-action="left" aria-label="Rotate map left">↶</button><button type="button" data-camera-action="right" aria-label="Rotate map right">↷</button><button type="button" data-camera-action="in" aria-label="Zoom in">+</button><button type="button" data-camera-action="out" aria-label="Zoom out">−</button><button type="button" data-camera-action="reset">Reset view</button></div>
     <div class="map-legend"><span><i class="legend-dot healthy"></i>Passing / responding</span><span><i class="legend-dot active"></i>Active stage</span><span><i class="legend-dot danger"></i>Needs attention</span><span><i class="legend-dot pending"></i>Pending / unknown</span><span><i class="legend-dot idle"></i>Idle</span></div>
   </div>
   <aside class="map-inspector" aria-label="System details">
-    <p class="eyebrow">SYSTEM INSIGHTS</p><h2>At a glance</h2>
+    <div class="team-roster"><p class="eyebrow">YOUR OCA TEAM</p>{% for node in topology.nodes if node.key in ['investigator', 'engineer', 'guardian'] %}<a href="{{ node.href }}"><span><i class="legend-dot {{ node.state }}"></i>{{ node.title }}</span><small>{{ node.label }}</small></a>{% endfor %}</div>
+    <p class="eyebrow">COMPANY CONNECTION</p><h2>{{ topology.company.name }}</h2>
+    <div class="connection-badge state-{{ topology.company.state }}"><i class="legend-dot {{ topology.company.state }}"></i>{{ topology.company.label }}</div>
+    <p class="company-location">{{ 'Local demo environment' if dry else topology.company.root }}</p>
+    <div class="service-list" aria-label="Company service health">{% for service in topology.company.services %}<div><i class="legend-dot {{ service.state }}"></i><strong>{{ service.title }}</strong><small>{{ service.label }}</small></div>{% endfor %}</div>
     <div class="insight-stat"><span>Health checks passing</span><strong>{{ topology.passing }}<small> / {{ topology.enabled }}</small></strong><div class="health-meter" role="meter" aria-label="Checks passing" aria-valuemin="0" aria-valuemax="{{ topology.enabled or 1 }}" aria-valuenow="{{ topology.passing }}"><span style="width:{{ (100 * topology.passing / topology.enabled) | round if topology.enabled else 0 }}%"></span></div><small>{{ topology.overall_label }}</small></div>
-    <div class="inspector-item"><span class="legend-dot {{ topology.overall }}"></span><div><strong>Production</strong><small>{{ topology.overall_label }}</small></div><a href="/health" aria-label="View production health">↗</a></div>
-    <div class="inspector-item"><span class="legend-dot {{ topology.nodes[0].state }}"></span><div><strong>Local inference</strong><small>{{ topology.nodes[0].label }}</small></div><a href="/settings" aria-label="View model settings">↗</a></div>
     <div class="inspector-ticket"><p class="eyebrow">LATEST ACTIVE TICKET</p>{% if topology.active_ticket %}<a href="/tickets/{{ topology.active_ticket.id }}">{{ topology.active_ticket.id }} ↗</a><strong>{{ topology.active_ticket.title }}</strong><span class="badge status-{{ topology.active_ticket.status.value }}">{{ topology.active_ticket.status.value | replace('_', ' ') }}</span>{% else %}<strong>No active ticket in recent activity</strong><small>Your team is standing by.</small>{% endif %}</div>
-    <div class="inspector-note"><span class="status-dot"></span>Everything stays local</div>
-    <p class="signal-explanation">Lines illustrate system connections. Agent activity follows the latest ticket stage. Health colors reflect recorded checks.</p><small class="map-updated">Updated {{ topology.checked_at }}</small>
+    <a class="company-health-link" href="/health">Inspect health checks ↗</a>
+    <p class="signal-explanation">Company endpoints determine connection status. Each service needs its own check to show verified health. Agent activity follows the latest ticket stage.</p><small class="map-updated">Updated {{ topology.checked_at }}</small>
   </aside>
 </section>
