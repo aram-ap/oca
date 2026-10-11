@@ -78,7 +78,7 @@ class SandboxManager:
             if self.active_ticket not in (None, ticket_id):
                 await self.runner.sandbox_down()
             prod_sha = await self.runner.prod_sha()
-            info = await self.runner.sandbox_up(None)
+            info = await self.runner.sandbox_up(prod_sha)
             self.active_ticket = ticket_id
             run = await self.db.create_sandbox_run(ticket_id, info.git_sha or prod_sha, await self._baseline())
             before = await self.runner.sandbox_loadtest(self.settings.loadtest_requests)

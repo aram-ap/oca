@@ -206,6 +206,20 @@ class SubprocessRunner:
         return data.decode("utf-8", errors="replace")
 
     async def prod_sha(self) -> str:
+        """The sha production is *running* (from the service's own app_info), not merely the last deploy record.
+
+        The two differ when someone rebuilds by hand or runs ops/reset.sh without a redeploy; the
+        sandbox must reproduce what customers currently hit.
+        """
+        try:
+            snap = await self.status()
+            if snap.git_sha and snap.git_sha not in ("unknown", "dev"):
+                rc, out, _ = await self._run("git", "rev-parse", "--verify", "-q", f"{snap.git_sha}^{{commit}}",
+                                             check=False, timeout=15)
+                if rc == 0 and out.strip():
+                    return snap.git_sha
+        except (RunnerError, Exception):  # noqa: BLE001 - fall back to the deploy history
+            pass
         records = await self.deployments(limit=1)
         if records:
             return records[0].git_sha
