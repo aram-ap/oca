@@ -41,6 +41,7 @@ class OllamaClient:
             "messages": messages,
             "stream": False,
             "keep_alive": self.config.keep_alive,
+            "options": {"num_predict": self.config.max_output_tokens},
         }
         if tools is not None:
             payload["tools"] = tools

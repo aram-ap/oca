@@ -71,6 +71,7 @@ class Settings:
     ollama_url: str = "http://localhost:11434"
     model: str = "nemotron3:33b"
     llm_timeout_s: float = 120.0
+    llm_max_output_tokens: int = 8192
     model_keep_alive: str = "5m"
     tool_timeout_s: float = 30.0
     hardware: str = "ASUS Ascent GX10"
@@ -146,6 +147,7 @@ class Settings:
             ollama_url=get("OLLAMA_URL", defaults.ollama_url).rstrip("/"),
             model=get("MODEL", defaults.model),
             llm_timeout_s=float(get("LLM_TIMEOUT_S", str(defaults.llm_timeout_s))),
+            llm_max_output_tokens=int(get("LLM_MAX_OUTPUT_TOKENS", str(defaults.llm_max_output_tokens))),
             model_keep_alive=get("MODEL_KEEP_ALIVE", defaults.model_keep_alive),
             tool_timeout_s=float(get("TOOL_TIMEOUT_S", str(defaults.tool_timeout_s))),
             hardware=get("HARDWARE", defaults.hardware),

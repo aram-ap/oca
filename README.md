@@ -204,7 +204,7 @@ The AI implementation is contained in `models/` and comprises **three separate t
 
 **Shared implementation:**
 
-- `models/config.py` — `ModelConfig` from `OCA_MODEL`, `OCA_OLLAMA_URL`, `OCA_LLM_TIMEOUT_S`, `OCA_MODEL_KEEP_ALIVE` (loopback URLs only).
+- `models/config.py` — `ModelConfig` from `OCA_MODEL`, `OCA_OLLAMA_URL`, `OCA_LLM_TIMEOUT_S`, `OCA_MODEL_KEEP_ALIVE`, `OCA_LLM_MAX_OUTPUT_TOKENS` (Ollama `num_predict`, default 8192, so one runaway reply cannot consume the whole timeout; loopback URLs only).
 - `models/core/llm.py` — non-streaming client for Ollama's local `/api/chat` with native tool calls; no proxies, no redirects, no retries.
 - `models/core/agent.py` — bounded decide → tool → observe loop with step/time/observation budgets, cross-ticket guard, JSON final answer validated against the role's schema (a repair turn uses Ollama structured output), and an `on_observation` hook that streams tool use onto the ticket timeline. Loop guards for small local models: an identical tool call is refused until a write succeeds, every tool result carries `steps_remaining`, a budget nudge fires near the end, and the Engineer cannot finish without a successful write (unless it reports `reproduced: false`). A failed attempt hands the next one a briefing of what was tried and why it failed.
 - `models/core/tool_registry.py` — JSON-schema-subset validation, per-role allowlists, dispatch.

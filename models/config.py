@@ -28,6 +28,7 @@ class ModelConfig:
     ollama_url: str = "http://localhost:11434"
     timeout_s: float = 120.0
     keep_alive: str = "5m"
+    max_output_tokens: int = 8192  # Ollama num_predict: stops a runaway reply before it eats the whole timeout
 
     def __post_init__(self) -> None:
         url = urlsplit(self.ollama_url)
@@ -40,6 +41,8 @@ class ModelConfig:
             raise ValueError("Model name and keep_alive must not be empty")
         if not math.isfinite(self.timeout_s) or self.timeout_s <= 0:
             raise ValueError("OCA_LLM_TIMEOUT_S must be a positive finite number")
+        if type(self.max_output_tokens) is not int or self.max_output_tokens < 1:
+            raise ValueError("OCA_LLM_MAX_OUTPUT_TOKENS must be a positive integer")
 
     @classmethod
     def from_env(cls) -> "ModelConfig":
@@ -48,4 +51,5 @@ class ModelConfig:
             ollama_url=os.getenv("OCA_OLLAMA_URL", "http://localhost:11434").rstrip("/"),
             timeout_s=float(os.getenv("OCA_LLM_TIMEOUT_S", "120")),
             keep_alive=os.getenv("OCA_MODEL_KEEP_ALIVE", "5m"),
+            max_output_tokens=int(os.getenv("OCA_LLM_MAX_OUTPUT_TOKENS", "8192")),
         )

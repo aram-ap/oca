@@ -58,6 +58,7 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(path, "/api/chat")
         self.assertFalse(payload["stream"])
         self.assertEqual(payload["model"], "nemotron3:33b")
+        self.assertEqual(payload["options"], {"num_predict": 8192})
         self.assertEqual(payload["messages"][-1]["role"], "tool")
         self.assertTrue(json.loads(payload["messages"][-1]["content"])["healthy"])
 
@@ -93,6 +94,9 @@ class TransportTests(unittest.TestCase):
         for timeout in [0, -1, float("nan"), float("inf")]:
             with self.subTest(timeout=timeout), self.assertRaises(ValueError):
                 ModelConfig(timeout_s=timeout)
+        for tokens in (0, -1, 2.5):
+            with self.assertRaises(ValueError):
+                ModelConfig(max_output_tokens=tokens)
 
 
 if __name__ == "__main__":
