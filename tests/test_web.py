@@ -1,3 +1,4 @@
+import re
 import pytest
 
 from oca.auth import SESSION_COOKIE
@@ -22,6 +23,9 @@ async def test_login_flow_and_pages(client, auth):
     fragment = await client.get("/tickets", headers={**cookie, "HX-Request": "true"})
     assert "<nav" not in fragment.text and 'id="ticket-table"' in fragment.text
     assert (await client.get("/static/htmx.min.js")).status_code == 200
+    m = re.search(r'/static/pager\.js\?v=([0-9a-f]{10})"', page.text)
+    assert m, "static assets must carry a cache-busting ?v= fingerprint"
+    assert (await client.get(f"/static/pager.js?v={m.group(1)}")).status_code == 200
     dash = await client.get("/dash", headers=cookie)
     assert "100% LOCAL" in dash.text and "INJECT INCIDENT" in dash.text
 

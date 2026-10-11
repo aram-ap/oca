@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +14,19 @@ from oca.auth import Principal, session_principal
 from oca.tz import COMMON_TIMEZONES, set_timezone  # noqa: F401 - re-exported for the web layer
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / "templates"))
+STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
+
+
+def static_version() -> str:
+    """Short fingerprint of the static assets, appended to their URLs as ?v=... so browsers never keep
+    serving a stale pager.js / dashboard.js after a deploy. Based on file names, sizes and mtimes, so it
+    changes on a plain git pull without a server restart."""
+    h = hashlib.sha1()
+    for f in sorted(STATIC_DIR.glob("*")):
+        if f.is_file():
+            st = f.stat()
+            h.update(f"{f.name}:{st.st_size}:{st.st_mtime_ns}\n".encode())
+    return h.hexdigest()[:10]
 
 
 def _localize(ctx, value):
@@ -97,5 +111,6 @@ def render(request: Request, template: str, **context):
     context.setdefault("settings", settings)
     context.setdefault("user", getattr(request.state, "user", None))
     context.setdefault("path", request.url.path)
+    context.setdefault("static_version", static_version())
     context.setdefault("tz_name", getattr(request.app.state, "tz_name", "UTC"))
     return TEMPLATES.TemplateResponse(request, template, context)
