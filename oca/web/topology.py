@@ -70,7 +70,11 @@ def topology_context(checks, tickets, local_ai, runner_state):
     wires = []
     for source, target, path in links:
         source_state, target_state = states[source], states[target]
-        state = "danger" if "danger" in {source_state, target_state} else "pending" if "pending" in {source_state, target_state} else "active" if "active" in {source_state, target_state} else "healthy" if source_state == target_state == "healthy" else "idle"
+        ends = {source_state, target_state}
+        # Nothing travels along a wire into an idle component: the orchestrator is active for the whole
+        # ticket, so "active if either end is active" lit the Engineer and Guardian wires while both sat idle.
+        state = ("danger" if "danger" in ends else "pending" if "pending" in ends else "idle" if "idle" in ends
+                 else "active" if "active" in ends else "healthy")
         wires.append({"path": path, "state": state})
     return {"nodes": nodes, "wires": wires, "overall": overall, "overall_label": overall_label,
             "active_ticket": active, "checked_at": now.strftime("%H:%M:%S UTC"),

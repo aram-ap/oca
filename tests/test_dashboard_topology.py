@@ -66,3 +66,18 @@ async def test_map_fragment_auth_and_incident_refresh(app, client, auth):
     assert '/static/command-center.css' in dash.text
     for path in ("/static/command-center.css", "/static/dashboard.js"):
         assert (await client.get(path)).status_code == 200
+
+
+def test_idle_agents_keep_idle_wires_while_a_ticket_is_open():
+    """Only the agent in the current stage is wired live to the orchestrator; idle agents stay dark."""
+    from types import SimpleNamespace
+    ticket = SimpleNamespace(status=SimpleNamespace(value="investigating"))
+    topo = context([], loaded=False, tickets=[ticket])
+    nodes = {n["key"]: n for n in topo["nodes"]}
+    assert nodes["orchestrator"]["state"] == "active" and nodes["investigator"]["state"] == "active"
+    assert nodes["engineer"]["state"] == nodes["guardian"]["state"] == "idle"
+    wires = {w["path"]: w["state"] for w in topo["wires"]}
+    assert wires["M260 293 V320 H550 V345"] == "active"   # investigator -> orchestrator
+    assert wires["M550 293 V345"] == "idle"               # engineer -> orchestrator
+    assert wires["M840 293 V320 H550 V345"] == "idle"     # guardian -> orchestrator
+    assert wires["M550 433 V465"] == "active"             # orchestrator -> api stays live
