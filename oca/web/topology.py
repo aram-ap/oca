@@ -3,6 +3,11 @@
 from datetime import datetime, timezone
 
 
+# The orchestrator moves a ticket sandbox_validated -> reviewed *before* the Guardian runs, so the review
+# happens under "reviewed"; "sandbox_validated" itself lasts milliseconds.
+REVIEW_STAGES = {"sandbox_validated", "reviewed"}
+
+
 def topology_context(checks, tickets, local_ai, runner_state):
     enabled = [c for c in checks if c.enabled]
     now = datetime.now(timezone.utc)
@@ -41,7 +46,7 @@ def topology_context(checks, tickets, local_ai, runner_state):
         node("engineer", "Engineer", "Sandbox fixes & tests", 460, 205,
              "active" if stage == "fix_proposed" else "idle", "Building fix" if stage == "fix_proposed" else "Idle", "/tickets"),
         node("guardian", "Guardian", "Evidence & risk review", 750, 205,
-             "active" if stage == "sandbox_validated" else "idle", "Review stage" if stage == "sandbox_validated" else "Idle", "/tickets"),
+             "active" if stage in REVIEW_STAGES else "idle", "Reviewing" if stage in REVIEW_STAGES else "Idle", "/tickets"),
         node("orchestrator", "Orchestrator", "Incident coordination", 460, 345,
              "active" if active else "idle", "Awaiting approval" if stage == "awaiting_approval" else "Incident in progress" if active else "No active ticket", "/tickets"),
         node("database", "Incident state", "SQLite · local record", 170, 465, "healthy", "Responding", "/logs"),

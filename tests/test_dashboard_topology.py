@@ -81,3 +81,15 @@ def test_idle_agents_keep_idle_wires_while_a_ticket_is_open():
     assert wires["M550 293 V345"] == "idle"               # engineer -> orchestrator
     assert wires["M840 293 V320 H550 V345"] == "idle"     # guardian -> orchestrator
     assert wires["M550 433 V465"] == "active"             # orchestrator -> api stays live
+
+
+def test_guardian_is_active_while_the_review_runs():
+    """The orchestrator sets `reviewed` before calling the Guardian, so that is the stage the review runs under."""
+    for stage in ("sandbox_validated", "reviewed"):
+        ticket = SimpleNamespace(status=SimpleNamespace(value=stage))
+        nodes = {n["key"]: n for n in context([check()], loaded=True, tickets=[ticket])["nodes"]}
+        assert nodes["guardian"]["state"] == "active" and nodes["guardian"]["label"] == "Reviewing", stage
+        assert nodes["engineer"]["state"] == nodes["investigator"]["state"] == "idle", stage
+    ticket = SimpleNamespace(status=SimpleNamespace(value="gate"))
+    nodes = {n["key"]: n for n in context([check()], loaded=True, tickets=[ticket])["nodes"]}
+    assert nodes["guardian"]["state"] == "idle"
