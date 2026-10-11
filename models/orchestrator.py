@@ -109,7 +109,9 @@ class Orchestrator:
         except ToolAPIError as exc:
             if exc.status == 409:
                 raise StageFailure(f"{path}: {exc.body[:300] or 'conflict'}") from exc
-            raise PlatformError(f"{method} {path}: {exc}") from exc
+            if exc.status == 502:  # the platform's runner failed (docker/git/ops script); this attempt is spent
+                raise StageFailure(f"{path}: {exc.body[:500] or 'runner failure'}") from exc
+            raise PlatformError(f"{method} {path}: {exc} {exc.body[:300]}".strip()) from exc
 
     async def _ticket(self, ticket_id: str) -> dict[str, Any]:
         return await self._call("GET", f"/api/tickets/{ticket_id}")

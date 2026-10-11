@@ -63,3 +63,5 @@ async def test_dev_inject_only_in_dry_mode(client, auth):
     assert (await client.post("/api/dev/inject", json={"incident": "timeout"}, headers=auth(Role.admin))).json()["injected"] == "timeout"
     assert (await client.get("/api/dev/state", headers=auth(Role.admin))).json()["effective_incident"] == "timeout"
     assert (await client.post("/api/dev/reset", headers=auth(Role.admin))).json()["reset"] is True
+    calls = (await client.get("/api/dev/runner-calls", headers=auth(Role.admin))).json()
+    assert calls["mode"] == "dry" and isinstance(calls["calls"], list)

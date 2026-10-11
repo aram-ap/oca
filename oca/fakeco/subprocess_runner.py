@@ -67,7 +67,7 @@ class SubprocessRunner:
             await proc.wait()
             raise RunnerError(f"{argv[0]} timed out after {timeout}s", list(argv), None)
         stdout, stderr = out.decode(errors="replace"), err.decode(errors="replace")
-        self.calls.append({"argv": list(argv), "rc": proc.returncode, "stderr_tail": stderr[-500:]})
+        self.calls.append({"argv": list(argv), "rc": proc.returncode, "stdout_tail": stdout[-300:], "stderr_tail": stderr[-500:]})
         del self.calls[:-200]
         if check and proc.returncode != 0:
             raise RunnerError(f"{' '.join(argv[:3])} failed (rc={proc.returncode}): {stderr.strip()[-800:]}",
@@ -95,7 +95,7 @@ class SubprocessRunner:
         try:
             return json.loads(candidate)  # type: ignore[possibly-undefined]
         except (NameError, json.JSONDecodeError) as exc:
-            raise RunnerError("No JSON object found in command output") from exc
+            raise RunnerError(f"No JSON object found in command output; tail: {text[-400:]!r}") from exc
 
     # ------------------------------------------------------------- observe
 

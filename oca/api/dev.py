@@ -39,6 +39,12 @@ async def reset(runner=Depends(get_runner), settings: Settings = Depends(get_set
     return {"reset": True}
 
 
+@router.get("/runner-calls")
+async def runner_calls(runner=Depends(get_runner), _: Principal = Depends(require(Role.admin))):
+    """Recent commands the runner executed (argv, rc, stderr tail); available in both modes."""
+    return {"mode": getattr(runner, "mode", "?"), "calls": list(getattr(runner, "calls", []))[-50:]}
+
+
 @router.get("/state")
 async def state(runner=Depends(get_runner), settings: Settings = Depends(get_settings),
                 _: Principal = Depends(require(Role.admin))):

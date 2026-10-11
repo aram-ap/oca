@@ -214,6 +214,19 @@ class OrchestratorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("deadline", result.reason)
         self.assertEqual(pipeline._active, set())
 
+    async def test_runner_failure_during_prepare_spends_the_attempt(self):
+        platform = FakePlatform(validations=[True])
+
+        async def failing(method, path, body=None):
+            if path.endswith("/prepare"):
+                raise ToolAPIError("HTTP 502", 502, '{"detail":"sandbox prepare failed: ops/sandbox.sh up failed (rc=1)"}')
+            return await FakePlatform.request(platform, method, path, body)
+        platform.request = failing
+        result = await orchestrator(platform, Canned(DIAG, DIAG), Canned(PATCH), guard(APPROVE)).run_ticket("INC-0001")
+        self.assertEqual(result.status, "failed")
+        self.assertIn("ops/sandbox.sh up failed", result.reason)
+        self.assertEqual(platform.statuses()[-1], "failed")
+
     async def test_uncertain_submission_is_not_repeated(self):
         platform = FakePlatform(validations=[True])
         attempts = []
