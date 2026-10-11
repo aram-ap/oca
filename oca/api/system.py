@@ -5,12 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from oca.api.deps import get_db, get_settings
 from oca.auth import Principal, current_principal, require
 from oca.config import Settings
 from oca.db import Database
+from oca.integrations import apply_settings, mask_secrets, merge_secrets
 from oca.schemas import LocalAIStats, Role, TicketEvent
 
 router = APIRouter(tags=["system"])
@@ -51,9 +52,11 @@ async def local_ai(settings: Settings = Depends(get_settings), db: Database = De
                    _: Principal = Depends(current_principal)):
     bytes_sent = await db.total_bytes_sent()
     jira = await db.get_setting("jira", {}) or {}
-    if jira.get("base_url"):
-        hosted = "self-hosted" if jira.get("deployment") == "data_center" else "metadata only"
-        mode = f"{hosted} · {bytes_sent} bytes external"
+    slack = await db.get_setting("slack", {}) or {}
+    connected = [n for n, c in (("Jira", jira), ("Slack", slack)) if c.get("enabled") and (c.get("base_url") or c.get("webhook_url"))]
+    if connected:
+        hosted = "self-hosted" if jira.get("deployment") == "data_center" and connected == ["Jira"] else "metadata only"
+        mode = f"{' + '.join(connected)} {hosted} · {bytes_sent} bytes external"
     else:
         mode = "not connected · 0 bytes external"
     return LocalAIStats(hardware=settings.hardware, model=settings.model, ticketing_mode=mode,
@@ -65,6 +68,9 @@ async def local_ai(settings: Settings = Depends(get_settings), db: Database = De
 async def get_settings_view(db: Database = Depends(get_db), settings: Settings = Depends(get_settings),
                             _: Principal = Depends(current_principal)):
     stored = await db.all_settings()
+    for name in ("jira", "slack"):
+        if isinstance(stored.get(name), dict):
+            stored[name] = mask_secrets(name, stored[name])
     stored["runner"] = settings.runner
     stored["model"] = settings.model
     stored["fakeco_root"] = str(settings.fakeco_root)
@@ -73,7 +79,7 @@ async def get_settings_view(db: Database = Depends(get_db), settings: Settings =
 
 
 @router.put("/settings")
-async def put_settings(changes: dict[str, Any], db: Database = Depends(get_db),
+async def put_settings(changes: dict[str, Any], request: Request, db: Database = Depends(get_db),
                        _: Principal = Depends(require(Role.admin))):
     for key, value in changes.items():
         expected = SETTING_KEYS.get(key)
@@ -87,8 +93,12 @@ async def put_settings(changes: dict[str, Any], db: Database = Depends(get_db),
             raise HTTPException(422, f"{key} must be a {expected.__name__}")
         if key == "risk_threshold" and not 0 <= value <= 100:
             raise HTTPException(422, "risk_threshold must be 0-100")
+        if key in ("jira", "slack"):
+            value = merge_secrets(key, value, await db.get_setting(key, {}) or {})
         await db.set_setting(key, value)
-    return await db.all_settings()
+    if any(k in changes for k in ("jira", "slack")) and hasattr(request.app.state, "integrations"):
+        await apply_settings(request.app)
+    return await get_settings_view(db, request.app.state.settings)
 
 
 @router.get("/logs", response_model=list[TicketEvent])

@@ -72,6 +72,13 @@ class Settings:
     model_keep_alive: str = "5m"
     tool_timeout_s: float = 30.0
     hardware: str = "ASUS Ascent GX10"
+    public_url: str = ""                    # dashboard links in Jira/Slack messages; defaults to api_url
+    jira_url: str = ""                      # OCA_JIRA_* seed the ``jira`` settings row; the settings page wins afterwards
+    jira_email: str = ""
+    jira_token: str = field(default="", repr=False)
+    jira_project: str = ""
+    slack_webhook_url: str = field(default="", repr=False)
+    outbox_poll_s: float = 2.0
     tokens: dict[Role, str] = field(default_factory=lambda: {
         Role.investigator: "agent-investigator", Role.engineer: "agent-engineer",
         Role.guardian: "agent-guardian", Role.orchestrator: "orchestrator",
@@ -98,6 +105,10 @@ class Settings:
             raise ValueError("Every OCA_*_TOKEN must be set and distinct")
         if self.risk_threshold < 0 or self.risk_threshold > 100:
             raise ValueError("OCA_RISK_THRESHOLD must be 0-100")
+        if not self.public_url:
+            object.__setattr__(self, "public_url", self.api_url)
+        if self.outbox_poll_s <= 0:
+            raise ValueError("OCA_OUTBOX_POLL_S must be positive")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None, dotenv: str | None = ".env") -> "Settings":
@@ -128,6 +139,11 @@ class Settings:
             model_keep_alive=get("MODEL_KEEP_ALIVE", defaults.model_keep_alive),
             tool_timeout_s=float(get("TOOL_TIMEOUT_S", str(defaults.tool_timeout_s))),
             hardware=get("HARDWARE", defaults.hardware),
+            public_url=get("PUBLIC_URL", "").rstrip("/"),
+            jira_url=get("JIRA_URL", "").rstrip("/"), jira_email=get("JIRA_EMAIL", ""),
+            jira_token=get("JIRA_TOKEN", ""), jira_project=get("JIRA_PROJECT", ""),
+            slack_webhook_url=get("SLACK_WEBHOOK_URL", ""),
+            outbox_poll_s=float(get("OUTBOX_POLL_S", str(defaults.outbox_poll_s))),
             tokens=tokens,
             admin_user=get("ADMIN_USER", defaults.admin_user),
             admin_password=get("ADMIN_PASSWORD", defaults.admin_password),

@@ -15,6 +15,9 @@ from oca.backup import BackupManager
 from oca.checks.scheduler import start_scheduler
 from oca.executor import Executor
 from oca.gate import load_allowlist
+from oca.integrations import start_integrations, start_outbox
+from oca.integrations.jira import JIRA_DEFAULTS
+from oca.integrations.slack import SLACK_DEFAULTS
 from oca.pipeline import Pipeline
 from oca.sandbox import SandboxManager
 from oca.web import web_router
@@ -33,8 +36,8 @@ DEFAULT_SETTINGS = {
     "blocklist": [],
     "cooldown_s": 120,
     "reopen_cooldown_s": 120,
-    "jira": {},
-    "slack": {},
+    "jira": dict(JIRA_DEFAULTS),
+    "slack": dict(SLACK_DEFAULTS),
 }
 
 
@@ -103,7 +106,7 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
     app.state.pipeline = Pipeline(app)
     app.state.scheduler = None
     # Later phases append coroutines ``async def start(app) -> asyncio.Task | None`` here.
-    app.state.service_starters = [start_scheduler]
+    app.state.service_starters = [start_integrations, start_scheduler, start_outbox]
     app.include_router(api_router, prefix="/api")
     app.mount("/static", StaticFiles(directory=str(Path(__file__).with_name("static"))), name="static")
     app.include_router(web_router)

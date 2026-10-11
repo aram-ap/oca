@@ -1,7 +1,7 @@
 {% extends "base.html" %}{% block title %}Settings{% endblock %}
 {% block content %}
 <h3>Settings</h3>
-{% if saved %}<p style="color:#1e7e34">Saved.</p>{% endif %}
+{% if saved %}<p style="color:#1e7e34">Saved{% if saved != True %} ({{ saved }}){% endif %}.</p>{% endif %}
 <div class="grid">
   <form method="post" action="/settings" class="panel">
     <h4>Policy</h4>
@@ -23,6 +23,58 @@
       </table>
     </div>
     <div class="panel"><h4>Allowlist <span class="muted">(read-only, {{ settings.allowlist_path.name }})</span></h4><pre style="font-size:.75rem">{{ allowlist }}</pre></div>
+  </div>
+</div>
+
+{% set jira = integrations.jira %}{% set slack = integrations.slack %}
+<h3 id="integrations" style="margin-top:1.5rem">Integrations</h3>
+<p class="muted">OCA never waits on these systems. Outbound text is built from templates over ticket IDs, statuses, risk scores and dashboard links; logs, code, diffs and metrics never leave the box (D8). Secrets are stored on this machine only.</p>
+<div class="grid">
+  <form method="post" action="/settings/integrations/jira" class="panel">
+    <h4>Jira <span class="badge {{ 'ok' if jira.enabled else 'muted' }}">{{ 'connected' if jira.enabled else 'configured, disabled' if jira.configured else 'not connected' }}</span></h4>
+    <label><input type="checkbox" name="enabled" {% if jira.config.enabled %}checked{% endif %}> Enabled</label>
+    <div class="grid">
+      <label>Deployment <select name="deployment"><option value="cloud" {% if jira.config.deployment == 'cloud' %}selected{% endif %}>Jira Cloud</option><option value="data_center" {% if jira.config.deployment == 'data_center' %}selected{% endif %}>Data Center / Server</option></select></label>
+      <label>Outbound detail <select name="outbound_detail">{% for d, label in [('minimal','minimal: IDs, statuses, links'),('summary','summary: + root-cause one-liner'),('off','off: inbound only')] %}<option value="{{ d }}" {% if jira.config.outbound_detail == d %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+    </div>
+    <label>Base URL <input name="base_url" value="{{ jira.config.base_url }}" placeholder="https://yourteam.atlassian.net"></label>
+    <div class="grid">
+      <label>Account email <input name="email" value="{{ jira.config.email }}" placeholder="you@example.com"></label>
+      <label>API token <input type="password" name="token" value="" placeholder="{{ 'saved — leave blank to keep' if jira.config.token else 'paste token' }}" autocomplete="off"></label>
+    </div>
+    <div class="grid">
+      <label>Project key <input name="project" value="{{ jira.config.project }}" placeholder="SRE"></label>
+      <label>Issue type <input name="issue_type" value="{{ jira.config.issue_type }}"></label>
+      <label>Default service <input name="default_service" value="{{ jira.config.default_service }}"></label>
+    </div>
+    <label><input type="checkbox" name="create_on_detect" {% if jira.config.create_on_detect %}checked{% endif %}> Create an issue when a health check opens a ticket</label>
+    <label>Status map <small class="muted">(one <code>oca_status=Jira Status</code> per line; defaults: To Do / In Progress / Done)</small>
+      <textarea name="status_map" rows="2" placeholder="awaiting_approval=In Review&#10;resolved=Done">{% for k, v in (jira.config.status_map or {}).items() %}{{ k }}={{ v }}
+{% endfor %}</textarea></label>
+    <div class="grid">
+      <label>Inbound JQL <small class="muted">(blank = outbound only)</small> <input name="jql" value="{{ jira.config.jql }}" placeholder="project = SRE AND labels = oca AND statusCategory != Done"></label>
+      <label>Poll interval (s) <input type="number" name="poll_interval_s" min="5" value="{{ jira.config.poll_interval_s }}"></label>
+    </div>
+    <div class="grid"><button type="submit">Save Jira</button><button type="button" class="secondary" hx-post="/settings/integrations/jira/test" hx-target="#jira-test-result" hx-swap="outerHTML">Test connection</button></div>
+    <div id="jira-test-result"></div>
+    <small class="muted">Outbox: {{ jira.outbox.pending }} pending · {{ jira.outbox.failed }} failed · {{ jira.outbox.bytes_sent }} bytes sent{% if jira.reader %} · reader {{ 'on' if jira.reader.enabled else 'off' }}{% if jira.reader.last_detail %} ({{ jira.reader.last_detail }}){% endif %}{% endif %}</small>
+  </form>
+  <div>
+    <form method="post" action="/settings/integrations/slack" class="panel">
+      <h4>Slack <span class="badge {{ 'ok' if slack.enabled else 'muted' }}">{{ 'connected' if slack.enabled else 'configured, disabled' if slack.configured else 'not connected' }}</span></h4>
+      <label><input type="checkbox" name="enabled" {% if slack.config.enabled %}checked{% endif %}> Enabled</label>
+      <label>Incoming webhook URL <input type="password" name="webhook_url" value="" placeholder="{{ 'saved — leave blank to keep' if slack.config.webhook_url else 'https://hooks.slack.com/services/…' }}" autocomplete="off"></label>
+      <label>Outbound detail <select name="outbound_detail">{% for d, label in [('minimal','minimal: IDs, statuses, links'),('summary','summary: + root-cause one-liner'),('off','off')] %}<option value="{{ d }}" {% if slack.config.outbound_detail == d %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+      <div class="grid"><button type="submit">Save Slack</button><button type="button" class="secondary" hx-post="/settings/integrations/slack/test" hx-target="#slack-test-result" hx-swap="outerHTML">Send test message</button></div>
+      <div id="slack-test-result"></div>
+      <small class="muted">Outbox: {{ slack.outbox.pending }} pending · {{ slack.outbox.failed }} failed · {{ slack.outbox.bytes_sent }} bytes sent</small>
+    </form>
+    {% if integrations.recent %}
+    <div class="panel"><h4>Recent outbound</h4>
+      <table class="compact"><tr><th>Ticket</th><th>Target</th><th>Kind</th><th>Status</th><th>Bytes</th></tr>
+      {% for row in integrations.recent[:10] %}<tr><td><a href="/tickets/{{ row.ticket_id }}">{{ row.ticket_id }}</a></td><td>{{ row.target }}</td><td>{{ row.kind }}</td><td>{{ row.status }}{% if row.last_error and row.status != 'sent' %} <span class="muted" title="{{ row.last_error }}">({{ row.attempts }} tries)</span>{% endif %}</td><td>{{ row.bytes_sent }}</td></tr>{% endfor %}
+      </table></div>
+    {% endif %}
   </div>
 </div>
 {% endblock %}

@@ -401,6 +401,8 @@ Never sent at any level: logs, code, diffs, metrics series, container names beyo
 
 **Auth:** Jira personal access token (Data Center) or API token + email (Cloud), stored in `settings.jira` on the box. Client is `httpx` against Jira REST API v2 — no SDK needed.
 
+**Configure it** on the dashboard: Settings → Integrations (base URL, account email, API token, project key, issue type, outbound detail, status map, inbound JQL), then *Test connection*. `OCA_JIRA_*` environment variables seed the same fields on first boot. `python3 -m oca.integrations.jira --doctor` checks credentials from a shell. Every delivery is recorded on the ticket timeline as an `external_sync` event with the byte count; `GET /api/integrations` and `GET /api/integrations/outbox` expose the same ledger.
+
 #### Slack
 
 Same interface, secondary priority:

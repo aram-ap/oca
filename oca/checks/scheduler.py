@@ -41,7 +41,8 @@ class Scheduler:
         self.app = app
         self.db = app.state.db
         self.settings = app.state.settings
-        self.checks: dict[str, HealthCheck] = {c.name: c for c in build_checks(self.settings, app.state.runner, self.db)}
+        self.checks: dict[str, HealthCheck] = {c.name: c for c in build_checks(
+            self.settings, app.state.runner, self.db, getattr(app.state, "integrations", None))}
         self._last_failed_event: dict[str, float] = {}
         self._ok_streak: dict[str, int] = {}
         self._lock = asyncio.Lock()  # ticks and run-now calls never overlap, so a service opens one ticket at a time

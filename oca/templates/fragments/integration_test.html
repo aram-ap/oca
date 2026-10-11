@@ -1,0 +1,15 @@
+<div id="{{ name }}-test-result" class="test-result">
+  {% if error %}
+    <p class="muted" style="color:#d9534f;margin:.4rem 0"><strong>Connection failed:</strong> {{ error }}</p>
+  {% elif name == "jira" %}
+    <p style="color:#1e7e34;margin:.4rem 0"><strong>Connected</strong> as {{ result.user }} · project <strong>{{ result.project }}</strong></p>
+    <table class="compact">
+      <tr><td>Issue types</td><td>{{ result.issue_types | join(", ") }}{% if not result.issue_type_ok %} <span class="muted">(configured issue type not found)</span>{% endif %}</td></tr>
+      <tr><td>Workflow statuses</td><td>{{ result.statuses | join(", ") }}</td></tr>
+      {% if result.unmapped_statuses %}<tr><td>Status map targets missing</td><td style="color:#d9534f">{{ result.unmapped_statuses | join(", ") }} — add overrides below</td></tr>{% endif %}
+      {% if result.jql_matches is defined %}<tr><td>Inbound JQL matches</td><td>{{ result.jql_matches }} issue(s)</td></tr>{% endif %}
+    </table>
+  {% else %}
+    <p style="color:#1e7e34;margin:.4rem 0"><strong>Test message posted</strong> ({{ result.bytes_sent }} bytes)</p>
+  {% endif %}
+</div>

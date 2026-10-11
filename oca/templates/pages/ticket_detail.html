@@ -2,7 +2,7 @@
 {% block content %}
 <hgroup>
   <h3>{{ ticket.id }} <span class="badge sev-{{ ticket.severity.value }}">{{ ticket.severity.value }}</span></h3>
-  <p>{{ ticket.title }} · {{ ticket.service }} · {{ ticket.source.value }} · opened {{ ticket.created_at | dt }}</p>
+  <p>{{ ticket.title }} · {{ ticket.service }} · {{ ticket.source.value }} · opened {{ ticket.created_at | dt }}{% if ticket.external_ref and ticket.external_ref.get('url') %} · <a href="{{ ticket.external_ref.url }}" target="_blank" rel="noopener">{{ ticket.external_ref.get('system', 'external') | capitalize }} {{ ticket.external_ref.get('key') }}</a>{% endif %}</p>
 </hgroup>
 <div class="grid">
   <div style="grid-column: span 2">
