@@ -88,3 +88,62 @@ approval still belongs to the future command gate, not these model outputs.
 Orchestration, ticket event persistence, the Main Process API, and live GX10/fakeco
 integration remain pending. Tests use scripted models and simulated tool APIs;
 they do not establish Nemotron's real reasoning or tool-calling performance.
+
+## Orchestrator implementation checkpoint
+
+`models/orchestrator.py` now coordinates Investigator -> Engineer -> Guardian
+sequentially. `NEEDS_TESTING` returns to Engineer with review feedback; `REJECT`
+or failed reproduction/validation returns to Investigator. The default budget is
+three Engineer/review attempts and 1,200 seconds total. Exhaustion or agent/output
+errors return an escalated result for human intervention. Cancellation/timeouts
+and uncertain API operations raise to the caller; they are never automatically
+replayed. The Main Process must handle those exceptions and recovery.
+
+Before advancing, the orchestrator posts local timeline events. It validates role
+outputs, then checks Guardian's retrieved diff/test/sandbox evidence before building
+the README's `deploy_patch` ActionRequest. Submission calls `/api/actions` exactly
+once per successful run and returns the gate response. It never approves, deploys,
+marks an incident resolved, or contacts Jira/Slack. Those are platform responsibilities.
+
+`models/platform_client.py` uses the distinct `OCE_ORCHESTRATOR_TOKEN` and only
+exposes ticket fetch, event append, and action submission. Agent tokens remain
+separate. With the Main Process implemented and all four tokens configured:
+
+```bash
+python3 -m models.main --ticket INC-0042 --max-attempts 3
+```
+
+The CLI prints a JSON pipeline result. Exit codes are 0 for a submitted request
+(inspect `gate_response` for the actual policy decision), 2 for escalation,
+and 1 for a runtime failure. `--check --tools` still runs the model smoke check.
+
+The platform handoff contracts need agreement with the platform teammate:
+
+- `GET /api/tickets/{id}` returns a ticket object with `id` and `status: detected`.
+  The entire ticket, including baseline metrics/description, is passed to agents.
+- `POST /api/tickets/{id}/events` accepts `actor`, `type`, and `payload`. Lifecycle
+  transitions use `type: run` with `payload.status`; role events carry `output`,
+  `steps`, and `observations`. Escalation is a run event with `phase: escalated`
+  and `requires_human: true`, not a new ticket-status enum.
+- Guardian's `get_diff` returns `patch_ref` and `diff`; `get_test_results` returns
+  `patch_ref`, `sandbox_run_id`, and boolean `passed`; `get_sandbox_results`
+  returns `patch_ref`, `sandbox_run_id`, and booleans `reproduced` and `passed`.
+  All references must agree with the Engineer's patch. These fields must come
+  from server-recorded evidence, not model-generated narratives.
+- `/api/actions` independently verifies the referenced evidence, approval mode,
+  risk threshold, and policy; it returns a JSON gate response. Server-side ticket
+  claiming/idempotency is needed for multiple orchestrators/processes. The local
+  duplicate-run guard only covers concurrent runs in one orchestrator instance;
+  automatic resume/recovery is not implemented.
+
+Test the orchestration without Ollama or a platform server:
+
+```bash
+python3 -m unittest discover -s models/tests -p test_orchestrator.py -v
+```
+
+This includes a complete run through the actual agent loops with scripted model
+responses and simulated platform tools, plus retries, escalation, evidence mismatch,
+audit failures, deadlines, and uncertain submissions. Live agent reasoning and
+platform integration remain pending; the earlier checkpoint notes describe the
+state before this addition.

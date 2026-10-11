@@ -887,3 +887,18 @@ Recorded so nobody re-litigates them by accident. Any can be overturned by the t
 - Main Process endpoints, server-side role permissions/sandbox isolation, shared
   platform schemas, orchestration, event persistence, and live GX10 validation
   remain pending. See `models/README.md` for setup and provisional tool contracts.
+
+### Orchestrator implementation notes
+
+- Implemented sequential agent handoffs in `models/orchestrator.py`, bounded
+  attempts/deadlines, Guardian feedback retries, and escalation on failed runs.
+- Added local event submission and construction of the documented `ActionRequest`.
+  Guardian's server-returned patch/test/sandbox references must match before
+  submission; the Main Process gate still owns policy and production approval.
+- Added an orchestrator-scoped API client and standalone `--ticket` mode in
+  `models/main.py`. No deployment, DB ownership, or external ticketing was added.
+- Added simulated pipeline tests, including actual agent loops, retry paths,
+  missing/mismatched evidence, audit failures, and uncertain API operations.
+- Live API integration, shared platform contracts, server-side incident claiming,
+  and full Nemotron/fakeco incident validation remain pending. Platform handoff
+  details are appended to `models/README.md`; previous README content is preserved.

@@ -7,6 +7,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from models.tools.client import ToolAPIClient, ToolAPIError
+from models.platform_client import PlatformClient
 
 
 class ToolAPITests(unittest.TestCase):
@@ -61,6 +62,20 @@ class ToolAPITests(unittest.TestCase):
             with self.assertRaises(ToolAPIError):
                 asyncio.run(self.client.request("POST", "/api/tools/sandbox/patch", {}))
             self.assertEqual(len(self.requests), previous + 1)
+
+    def test_orchestrator_client_routes_and_separate_token(self):
+        client = PlatformClient(role="orchestrator", token="orchestrator-token",
+                                base_url=self.client.base_url)
+        asyncio.run(client.get_ticket("INC-1"))
+        asyncio.run(client.append_event("INC-1", {"actor": "orchestrator", "type": "run", "payload": {}}))
+        asyncio.run(client.submit_action({"action": "deploy_patch"}))
+        self.assertEqual([r[1] for r in self.requests], [
+            "/api/tickets/INC-1?", "/api/tickets/INC-1/events", "/api/actions"])
+        self.assertTrue(all(r[2] == "Bearer orchestrator-token" for r in self.requests))
+        with self.assertRaises(ValueError):
+            asyncio.run(client.request("POST", "/api/tools/sandbox/patch", {}))
+        with self.assertRaises(ValueError):
+            PlatformClient(role="guardian", token="guardian-token")
 
 
 if __name__ == "__main__":
