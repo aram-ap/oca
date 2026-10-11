@@ -207,6 +207,36 @@ class SubprocessRunner:
         data = target.read_bytes()[:MAX_FILE_BYTES]
         return data.decode("utf-8", errors="replace")
 
+    def _tree(self) -> Path:
+        """The sandbox worktree when it exists (the Engineer's view), else production."""
+        return self.worktree if self.worktree.is_dir() else self.root
+
+    async def read_sandbox_file(self, rel_path: str) -> str:
+        path = check_readable_path(rel_path)
+        tree = self._tree()
+        target = (tree / path).resolve()
+        if not str(target).startswith(str(tree.resolve()) + os.sep):
+            raise PermissionError(rel_path)
+        if not target.is_file():
+            raise FileNotFoundError(rel_path)
+        return target.read_bytes()[:MAX_FILE_BYTES].decode("utf-8", errors="replace")
+
+    async def list_files(self, rel_dir: str) -> list[str]:
+        path = check_readable_path(rel_dir)
+        tree = self._tree()
+        target = (tree / path).resolve()
+        if not str(target).startswith(str(tree.resolve()) + os.sep):
+            raise PermissionError(rel_dir)
+        if not target.is_dir():
+            raise FileNotFoundError(rel_dir)
+        out = []
+        for entry in sorted(target.rglob("*")):
+            if entry.is_file() and "__pycache__" not in entry.parts and ".git" not in entry.parts:
+                out.append(entry.relative_to(tree).as_posix())
+            if len(out) >= 500:
+                break
+        return out
+
     async def prod_sha(self) -> str:
         """The sha production is *running* (from the service's own app_info), not merely the last deploy record.
 

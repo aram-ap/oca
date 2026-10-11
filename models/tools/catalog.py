@@ -20,7 +20,16 @@ CATALOG = [
     ("get_git", "Read deployment history or a diff, never change git state.", READERS,
      "GET", "/api/tools/git", object_schema({"operation": {"type": "string", "enum": ["history", "diff"]},
                                             "ref": TEXT}, ["operation"])),
-    ("apply_patch", "Apply a unified diff only in this ticket's sandbox worktree.", ENG,
+    ("list_files", "List files under a repository directory (get_code reads one file; it cannot list).", READERS,
+     "GET", "/api/tools/files", object_schema({"path": TEXT})),
+    ("set_config", "Set KEY=value in services/orders-api/config/app.env on the fix branch; the server writes and "
+                   "applies the diff. Preferred for any config fix.", ENG,
+     "POST", "/api/tools/sandbox/config", object_schema({"ticket_id": TEXT, "key": TEXT, "value": {"type": "integer"}})),
+    ("create_migration", "Create the next numbered services/orders-api/migrations/NNN_<name>.sql with this SQL on the "
+                         "fix branch; the server writes and applies the diff. Preferred for index fixes.", ENG,
+     "POST", "/api/tools/sandbox/migration", object_schema({"ticket_id": TEXT, "name": TEXT, "sql": TEXT})),
+    ("apply_patch", "Apply a unified diff only in this ticket's sandbox worktree (for code changes that set_config "
+                    "and create_migration cannot express).", ENG,
      "POST", "/api/tools/sandbox/patch", object_schema({"ticket_id": TEXT, "diff": TEXT})),
     ("run_tests", "Run the server's allowlisted sandbox test suite; no shell commands.", ENG,
      "POST", "/api/tools/sandbox/test", object_schema({"ticket_id": TEXT})),

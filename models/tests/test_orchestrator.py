@@ -251,3 +251,20 @@ class OrchestratorTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RetryFeedbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_exhausted_engineer_briefs_the_next_attempt(self):
+        wasted = [Observation("run_tests", {"ticket_id": "INC-0001"}, {"passed": False}, True) for _ in range(3)] + [
+            Observation("apply_patch", {"ticket_id": "INC-0001", "diff": "x"},
+                        {"applied": False, "error": "patch does not apply: malformed patch at line 6"}, True)]
+        platform = FakePlatform(validations=[True])
+        inv, eng = Canned(DIAG, DIAG), Canned(AgentError("engineer exhausted its 16 steps", wasted), PATCH)
+        result = await orchestrator(platform, inv, eng, guard(APPROVE)).run_ticket("INC-0001")
+        self.assertEqual((result.status, result.attempts), ("awaiting_approval", 2))
+        brief = inv.contexts[1]["feedback"][0]
+        self.assertIn("Previous attempt: engineer failed", brief)
+        self.assertIn("run_tests x3", brief)
+        self.assertIn("malformed patch at line 6", brief)
+        self.assertIn("set_config", brief)
+        self.assertEqual(eng.contexts[1]["feedback"], [brief])

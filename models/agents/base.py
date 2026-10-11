@@ -12,6 +12,8 @@ from models.tools.client import ToolAPIClient
 class RoleAgent(Agent):
     ROLE: str
     OUTPUT_SCHEMA: dict
+    REQUIRED_TOOLS: tuple[str, ...] = ()
+    MUTATING_TOOLS: tuple[str, ...] = ()
 
     def __init__(self, *, llm=None, api_client=None, registry=None, **limits):
         if api_client is not None and api_client.role != self.ROLE:
@@ -24,5 +26,7 @@ class RoleAgent(Agent):
             )
             registry = build_registry(api_client)
         prompt = (Path(__file__).resolve().parents[1] / "prompts" / f"{self.ROLE}.txt").read_text(encoding="utf-8")
+        limits.setdefault("required_tools", self.REQUIRED_TOOLS)
+        limits.setdefault("mutating_tools", self.MUTATING_TOOLS)
         super().__init__(role=self.ROLE, prompt=prompt, output_schema=self.OUTPUT_SCHEMA,
                          llm=llm or OllamaClient(), registry=registry, **limits)

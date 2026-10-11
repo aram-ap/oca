@@ -31,6 +31,33 @@ FORMAT_HINT = ("Unified diff format: '--- a/<path>' and '+++ b/<path>' headers (
                "get_code first and copy the context lines verbatim. No markdown fences.")
 
 
+def config_diff(path: str, content: str, key: str, value: int | str) -> str:
+    """A one-hunk unified diff that sets KEY=value in an env file (replacing the line or appending it)."""
+    lines = content.split("\n")
+    if lines and lines[-1] == "":
+        lines = lines[:-1]
+    new_line = f"{key}={value}"
+    for index, line in enumerate(lines):
+        if re.match(rf"^\s*{re.escape(key)}\s*=", line):
+            if line == new_line:
+                raise ValueError(f"{key} is already {value}")
+            before = lines[max(0, index - 2):index]
+            after = lines[index + 1:index + 3]
+            start = index + 1 - len(before)
+            body = [" " + l for l in before] + ["-" + line, "+" + new_line] + [" " + l for l in after]
+            count = len(before) + 1 + len(after)
+            return (f"--- a/{path}\n+++ b/{path}\n@@ -{start},{count} +{start},{count} @@\n" + "\n".join(body) + "\n")
+    before = lines[-2:]
+    start = len(lines) + 1 - len(before)
+    body = [" " + l for l in before] + ["+" + new_line]
+    return (f"--- a/{path}\n+++ b/{path}\n@@ -{start},{len(before)} +{start},{len(before) + 1} @@\n" + "\n".join(body) + "\n")
+
+
+def new_file_diff(path: str, content: str) -> str:
+    lines = content.rstrip("\n").split("\n")
+    return f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{len(lines)} @@\n" + "\n".join("+" + l for l in lines) + "\n"
+
+
 def normalize(diff: str) -> str:
     """Strip markdown fences and stray prose around a diff; make sure it ends with a newline."""
     text = diff.replace("\r\n", "\n").strip("\n")
