@@ -20,7 +20,16 @@ CATALOG = [
     ("get_git", "Read deployment history or a diff, never change git state.", READERS,
      "GET", "/api/tools/git", object_schema({"operation": {"type": "string", "enum": ["history", "diff"]},
                                             "ref": TEXT}, ["operation"])),
-    ("apply_patch", "Apply a unified diff only in this ticket's sandbox worktree.", ENG,
+    ("list_files", "List files under a repository directory (get_code reads one file; it cannot list).", READERS,
+     "GET", "/api/tools/files", object_schema({"path": TEXT})),
+    ("set_config", "Set KEY=value in services/orders-api/config/app.env on the fix branch; the server writes and "
+                   "applies the diff. Preferred for any config fix.", ENG,
+     "POST", "/api/tools/sandbox/config", object_schema({"ticket_id": TEXT, "key": TEXT, "value": {"type": "integer"}})),
+    ("create_migration", "Create the next numbered services/orders-api/migrations/NNN_<name>.sql with this SQL on the "
+                         "fix branch; the server writes and applies the diff. Preferred for index fixes.", ENG,
+     "POST", "/api/tools/sandbox/migration", object_schema({"ticket_id": TEXT, "name": TEXT, "sql": TEXT})),
+    ("apply_patch", "Apply a unified diff only in this ticket's sandbox worktree (for code changes that set_config "
+                    "and create_migration cannot express).", ENG,
      "POST", "/api/tools/sandbox/patch", object_schema({"ticket_id": TEXT, "diff": TEXT})),
     ("run_tests", "Run the server's allowlisted sandbox test suite; no shell commands.", ENG,
      "POST", "/api/tools/sandbox/test", object_schema({"ticket_id": TEXT})),
@@ -45,11 +54,12 @@ def build_registry(client) -> ToolRegistry:
                 try:
                     return await client.request(method, path, arguments)
                 except ToolAPIError as exc:
-                    # A 4xx is the server rejecting *this* request (unknown path, bad ref, conflict):
-                    # the model should see it and try something else. 5xx/transport errors still abort,
-                    # because a write may or may not have happened and must not be retried blindly.
-                    if exc.status is not None and 400 <= exc.status < 500:
-                        raise ToolError(f"HTTP {exc.status}: {exc.body[:300] or 'request rejected'}") from exc
+                    # A 4xx is the server rejecting *this* request (unknown path, bad ref, conflict): the model
+                    # should see it and try something else. A failed GET is also safe to show, whatever the
+                    # status: nothing was written. A 5xx or transport failure on a POST still aborts, because
+                    # the write may or may not have happened and must not be retried blindly.
+                    if exc.status is not None and (400 <= exc.status < 500 or method == "GET"):
+                        raise ToolError(f"HTTP {exc.status}: {exc.body[:300] or 'request failed'}") from exc
                     raise
             return handler
 

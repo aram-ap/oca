@@ -426,6 +426,8 @@ Never sent at any level: logs, code, diffs, metrics series, container names beyo
 
 **Auth:** Jira personal access token (Data Center) or API token + email (Cloud), stored in `settings.jira` on the box. Client is `httpx` against Jira REST API v2 — no SDK needed.
 
+**Configure it** on the dashboard: Settings → Integrations (base URL, account email, API token, project key, issue type, outbound detail, status map, inbound JQL), then *Test connection*. `OCA_JIRA_*` environment variables seed the same fields on first boot. `python3 -m oca.integrations.jira --doctor` checks credentials from a shell. Every delivery is recorded on the ticket timeline as an `external_sync` event with the byte count; `GET /api/integrations` and `GET /api/integrations/outbox` expose the same ledger.
+
 #### Slack
 
 Same interface, secondary priority:
@@ -897,7 +899,7 @@ Recorded so nobody re-litigates them by accident. Any can be overturned by the t
 | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **D1** | **Agent tools are HTTP clients.** `models/tools/catalog.py` tools call `oca` `/api/tools/*`. The registry controls which tools an agent is offered; per-agent API tokens control what the server will actually serve.          |
 | **D2** | **Guardian is advisory.** Its `APPROVE` never reaches the gate directly. `models/orchestrator.py` builds the `ActionRequest` and posts it to `/api/actions`.                                                       |
-| **D3** | **Human approval on by default.** `settings.require_human_approval = true`. After the gate's policy checks pass, the ticket waits for an Approve click. Can be switched off in Settings for a fully autonomous run. |
+| **D3** | **Human approval is a switch, off by default.** `settings.require_human_approval = false`: after the gate's policy checks pass the executor deploys immediately. Turn it on in Settings (or `OCA_REQUIRE_HUMAN_APPROVAL=true`) to make the ticket wait for an Approve click. |
 | **D4** | **Single process.** `oca/main.py` runs the orchestrator as an in-process background task. `models/main.py` is a standalone dev entry point only.                                                                  |
 | **D5** | **Fully local frontend.** HTMX + Jinja2 + Alpine served by FastAPI; local auth. No Vercel / Supabase / Auth0 (§4.10).                                                                                             |
 | **D6** | **Sequential agent execution first.** Concurrency is an A8 benchmark, not a day-one feature (§8).                                                                                                                 |

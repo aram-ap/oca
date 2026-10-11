@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from oca.api import actions, checks, deployments, dev, sandbox, system, tickets, tools
+from oca.api import actions, checks, deployments, dev, integrations, sandbox, system, tickets, tools
 
 api_router = APIRouter()
 api_router.include_router(system.router)
@@ -13,3 +13,4 @@ api_router.include_router(sandbox.router)
 api_router.include_router(checks.router)
 api_router.include_router(tools.router)
 api_router.include_router(dev.router)
+api_router.include_router(integrations.router)

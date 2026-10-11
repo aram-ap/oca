@@ -164,6 +164,11 @@ class Database:
                               (service, TicketStatus.resolved.value))
         return self._ticket(row) if row else None
 
+    async def ticket_by_external_ref(self, system: str, key: str) -> Ticket | None:
+        row = await self._one("SELECT * FROM tickets WHERE json_extract(external_ref, '$.system') = ? "
+                              "AND json_extract(external_ref, '$.key') = ? ORDER BY created_at DESC LIMIT 1", (system, key))
+        return self._ticket(row) if row else None
+
     async def last_resolved_at(self, service: str) -> datetime | None:
         row = await self._one("SELECT MAX(resolved_at) AS t FROM tickets WHERE service = ? AND resolved_at IS NOT NULL",
                               (service,))
@@ -496,6 +501,16 @@ class Database:
                 "UPDATE integration_outbox SET status = ?, attempts = ?, bytes_sent = bytes_sent + ?, next_attempt = ?, "
                 "last_error = ? WHERE id = ?",
                 (status.value, attempts, bytes_sent, _iso(next_attempt), error, item_id))
+
+    async def has_pending_outbox(self, ticket_id: str, target: str, kind: str) -> bool:
+        row = await self._one("SELECT 1 FROM integration_outbox WHERE ticket_id = ? AND target = ? AND kind = ? "
+                              "AND status = 'pending' LIMIT 1", (ticket_id, target, kind))
+        return row is not None
+
+    async def list_outbox(self, limit: int = 50) -> list[dict[str, Any]]:
+        rows = await self._all("SELECT id, ticket_id, target, kind, status, attempts, next_attempt, bytes_sent, last_error "
+                               "FROM integration_outbox ORDER BY id DESC LIMIT ?", (limit,))
+        return [dict(r) for r in rows]
 
     async def outbox_stats(self) -> dict[str, dict[str, int]]:
         rows = await self._all(

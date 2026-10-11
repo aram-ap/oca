@@ -25,7 +25,7 @@ from models.tools.client import ToolAPIError
 log = logging.getLogger("oca.orchestrator")
 
 CONFIG_KEYS = ("DB_TIMEOUT_MS", "DB_POOL_MAX", "DB_POOL_ACQUIRE_TIMEOUT_MS")
-SERVER_SIDE_TOOLS = frozenset({"apply_patch", "run_tests", "run_loadtest"})  # the server logs these itself
+SERVER_SIDE_TOOLS = frozenset({"apply_patch", "set_config", "create_migration", "run_tests", "run_loadtest"})  # server-logged
 ROLES = ("investigator", "engineer", "guardian")
 OUTPUT_SCHEMAS = {"investigator": DIAGNOSIS_SCHEMA, "engineer": PATCH_SCHEMA, "guardian": REVIEW_SCHEMA}
 REVIEW_EVIDENCE_TOOLS = ("get_diff", "get_test_results", "get_sandbox_results")
@@ -35,6 +35,30 @@ NO_REPLAY_STATUSES = frozenset({"awaiting_approval", "approved", "deploying", "r
 
 class StageFailure(Exception):
     """A stage produced no usable result; the current attempt is spent."""
+
+    def __init__(self, message: str, feedback: str | None = None):
+        super().__init__(message)
+        self.feedback = feedback  # what the next attempt's agents should know about this failure
+
+
+def failure_feedback(role: str, exc: AgentError) -> str:
+    """Summarise a spent attempt for the next one: which tools ran, how often, and why writes failed."""
+    counts: dict[str, int] = {}
+    errors: list[str] = []
+    for o in exc.observations:
+        counts[o.tool] = counts.get(o.tool, 0) + 1
+        if isinstance(o.result, dict) and (o.result.get("applied") is False or not o.ok):
+            detail = o.result.get("error") or ""
+            if detail and o.tool in ("apply_patch", "set_config", "create_migration"):
+                errors.append(f"{o.tool}: {detail[:200]}")
+    used = ", ".join(f"{t} x{n}" for t, n in sorted(counts.items(), key=lambda kv: -kv[1])) or "no tools"
+    text = f"Previous attempt: {role} failed ({exc}). Tools used: {used}."
+    if errors:
+        text += " Write failures: " + " | ".join(dict.fromkeys(errors[-3:]))
+    if role == "engineer":
+        text += (" This time: reproduce once with run_loadtest, then fix with set_config (config values) or "
+                 "create_migration (indexes); do not hand-write a diff unless neither applies, and never repeat a call.")
+    return text
 
 
 class PlatformError(RuntimeError):
@@ -148,7 +172,8 @@ class Orchestrator:
             return result
         except (AgentError, OllamaError, ToolAPIError, ToolError) as exc:
             await self._event(ticket_id, "error", {"where": role, "error": f"{type(exc).__name__}: {exc}"[:800]})
-            raise StageFailure(f"{role} failed: {exc}") from exc
+            hint = failure_feedback(role, exc) if isinstance(exc, AgentError) else None
+            raise StageFailure(f"{role} failed: {exc}", feedback=hint) from exc
 
     @staticmethod
     def audit_review(review: AgentResult, run: dict[str, Any]) -> None:
@@ -283,6 +308,8 @@ class Orchestrator:
                                       action_request=request, gate_response=decision)
             except StageFailure as exc:
                 failures.append(f"attempt {attempt}: {exc}")
+                if exc.feedback:
+                    feedback.append(exc.feedback)
                 log.warning("%s attempt %d failed: %s", ticket_id, attempt, exc)
         summary = "attempts exhausted: " + " | ".join(failures)
         await self._event(ticket_id, "error", {"where": "orchestrator", "error": summary[:800], "attempts": failures})

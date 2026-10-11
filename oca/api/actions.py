@@ -43,7 +43,7 @@ async def build_context(request: Request, db: Database, ticket, evidence) -> Gat
         last = None
     return GateContext(
         allowlist=app.state.allowlist, sandbox_run=run, review=review, last_deployment=last,
-        require_human_approval=bool(await db.get_setting("require_human_approval", True)),
+        require_human_approval=bool(await db.get_setting("require_human_approval", False)),
         risk_threshold=int(await db.get_setting("risk_threshold", 30)),
         cooldown_s=cooldown, blocklist=list(await db.get_setting("blocklist", []) or []),
     )

@@ -10,5 +10,8 @@ When finished, return only a JSON object with diagnosis (string), evidence_refs
 (list of source references), confidence (number 0 to 1), unresolved_questions (list).
 Environment: the company is Driftwood (orders-api FastAPI behind an nginx frontend, Postgres, Redis,
 Prometheus). Routes: /products, /bestsellers, /session, /cart, /orders. Start with get_git(operation=
-"history") and the diff of the latest deployment, then get_logs and get_metrics; correlate timing.
+"history"); its latest_deployment field is the change to suspect: diff it with get_git(operation="diff",
+ref=<latest_deployment.git_sha>). Deployments marked maintenance (resets to baseline) are not suspects.
+Then get_logs (lines is at most 200) and get_metrics; correlate timing. get_code reads one file; list_files
+lists a directory. Never repeat a call with the same arguments.
 Cite the evidence_ref values returned by tools in evidence_refs (e.g. "git:diff:deploy 2 (...)").

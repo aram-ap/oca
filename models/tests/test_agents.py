@@ -57,7 +57,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
     async def test_each_role_uses_tools_then_returns_structured_output(self):
         cases = [
             (Investigator, call("get_logs", service="orders-api"), DIAGNOSIS),
-            (Engineer, call("run_loadtest", ticket_id="INC-1"), PATCH),
+            (Engineer, call("set_config", ticket_id="INC-1", key="DB_TIMEOUT_MS", value=3000), PATCH),
             (Guardian, call("get_diff", ticket_id="INC-1"), REVIEW),
         ]
         for cls, tool_call, output in cases:
@@ -190,14 +190,19 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         class ServerErrorAPI(FakeAPI):
             async def request(self, method, path, arguments):
                 raise ToolAPIError("HTTP 500", 500, "")
-        with self.assertRaises(ToolAPIError):
-            await Investigator(llm=ScriptedModel(call("get_logs", service="orders-api")),
-                               api_client=ServerErrorAPI("investigator")).run({"ticket_id": "INC-1"})
+        with self.assertRaises(ToolAPIError):  # a failed write (POST) aborts: it may have half-happened
+            await Engineer(llm=ScriptedModel(call("run_tests", ticket_id="INC-1")),
+                           api_client=ServerErrorAPI("engineer")).run({"ticket_id": "INC-1"})
+        reader = ScriptedModel(call("get_logs", service="orders-api"), call("get_metrics", service="orders-api"))
+        with self.assertRaises(AgentError):  # a failed read is just an observation; the run continues to its budget
+            await Investigator(llm=reader, api_client=ServerErrorAPI("investigator"), max_steps=2).run({"ticket_id": "INC-1"})
+        self.assertIn("HTTP 500", reader.histories[1][-1]["content"])
 
     async def test_role_catalogs_and_dispatch_both_enforce_permissions(self):
         expected = {
-            "investigator": {"get_logs", "get_containers", "get_metrics", "get_code", "get_git"},
-            "engineer": {"get_code", "get_git", "apply_patch", "run_tests", "run_loadtest"},
+            "investigator": {"get_logs", "get_containers", "get_metrics", "get_code", "get_git", "list_files"},
+            "engineer": {"get_code", "get_git", "list_files", "set_config", "create_migration", "apply_patch",
+                         "run_tests", "run_loadtest"},
             "guardian": {"get_diff", "get_test_results", "get_sandbox_results"},
         }
         for role, names in expected.items():
@@ -220,3 +225,88 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LoopGuardTests(unittest.IsolatedAsyncioTestCase):
+    """Budget reminders, repeated-call guard, and the Engineer's write-tool requirement."""
+
+    async def test_identical_call_is_refused_until_a_write_succeeds(self):
+        api = FakeAPI("engineer")
+        model = ScriptedModel(call("run_tests", ticket_id="INC-1"), call("run_tests", ticket_id="INC-1"),
+                              call("set_config", ticket_id="INC-1", key="DB_TIMEOUT_MS", value=3000),
+                              call("run_tests", ticket_id="INC-1"), final(PATCH))
+        result = await Engineer(llm=model, api_client=api, max_steps=8).run({"ticket_id": "INC-1"})
+        tools = [(o.tool, o.ok) for o in result.observations]
+        self.assertEqual(tools, [("run_tests", True), ("run_tests", False), ("set_config", True), ("run_tests", True)])
+        self.assertIn("already ran at step 1", result.observations[1].result["error"])
+        self.assertEqual(len([r for r in api.requests if r[1].endswith("/sandbox/test")]), 2)  # the repeat never hit the API
+        self.assertIn('"steps_remaining": 7', model.histories[1][-1]["content"])
+
+    async def test_engineer_is_nudged_and_cannot_claim_a_fix_without_writing(self):
+        api = FakeAPI("engineer")
+        model = ScriptedModel(call("run_loadtest", ticket_id="INC-1"), final(PATCH),
+                              call("get_code", path="services/orders-api/config/app.env"),
+                              call("set_config", ticket_id="INC-1", key="DB_TIMEOUT_MS", value=3000), final(PATCH))
+        result = await Engineer(llm=model, api_client=api, max_steps=8, nudge_after=2).run({"ticket_id": "INC-1"})
+        self.assertEqual(result.output, PATCH)
+        pushback, nudge = model.histories[2][-2], model.histories[2][-1]  # both land before the third model call
+        self.assertEqual(pushback["role"], "user")
+        self.assertIn("claims a fix that was never applied", pushback["content"])
+        self.assertIn("Budget check", nudge["content"])
+        self.assertIn("set_config / create_migration / apply_patch", nudge["content"])
+
+    async def test_not_reproduced_report_needs_no_write(self):
+        api = FakeAPI("engineer")
+        unreproduced = {**PATCH, "patch_ref": "none", "diff": "none", "reproduced": False, "passed": False}
+        model = ScriptedModel(call("run_loadtest", ticket_id="INC-1"), final(unreproduced))
+        result = await Engineer(llm=model, api_client=api, max_steps=4).run({"ticket_id": "INC-1"})
+        self.assertFalse(result.output["reproduced"])
+
+    async def test_rejected_write_does_not_count_and_exhaustion_keeps_observations(self):
+        class RejectingAPI(FakeAPI):
+            async def request(self, method, path, arguments):
+                self.requests.append((method, path, arguments))
+                if path.endswith("/sandbox/patch"):
+                    return {"applied": False, "error": "patch does not apply: malformed patch at line 6"}
+                return {"evidence_ref": "x"}
+
+        api = RejectingAPI("engineer")
+        model = ScriptedModel(call("apply_patch", ticket_id="INC-1", diff="bad"), final(PATCH),
+                              call("apply_patch", ticket_id="INC-1", diff="bad"))
+        with self.assertRaises(AgentError) as ctx:
+            await Engineer(llm=model, api_client=api, max_steps=3).run({"ticket_id": "INC-1"})
+        self.assertEqual([o.tool for o in ctx.exception.observations], ["apply_patch", "apply_patch"])
+        self.assertIn("already ran", ctx.exception.observations[1].result["error"])  # identical bad diff is refused
+
+    async def test_investigator_has_no_write_requirement(self):
+        api = FakeAPI("investigator")
+        model = ScriptedModel(call("get_logs", service="orders-api"), final(DIAGNOSIS))
+        result = await Investigator(llm=model, api_client=api, max_steps=4).run({"ticket_id": "INC-1"})
+        self.assertEqual(result.steps, 2)
+
+
+class ToolFailureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_read_is_a_tool_error_but_failed_write_aborts(self):
+        from models.tools.client import ToolAPIError
+
+        class FlakyAPI(FakeAPI):
+            async def request(self, method, path, arguments):
+                self.requests.append((method, path, arguments))
+                raise ToolAPIError("Main Process request failed (HTTP 502); no retry", 502, "runner failure")
+
+        api = FlakyAPI("engineer")
+        model = ScriptedModel(call("get_git", operation="diff", ref="deploy 26 (a..b)"),
+                              call("set_config", ticket_id="INC-1", key="DB_TIMEOUT_MS", value=3000))
+        with self.assertRaises(ToolAPIError):
+            await Engineer(llm=model, api_client=api, max_steps=4).run({"ticket_id": "INC-1"})
+        self.assertEqual(len(api.requests), 2)
+        read = model.histories[1][-1]  # the failed GET came back to the model as a tool error
+        self.assertEqual(read["role"], "tool")
+        self.assertIn("HTTP 502", read["content"])
+
+    async def test_tool_names_are_case_insensitive(self):
+        api = FakeAPI("investigator")
+        model = ScriptedModel(call("List_files", path="services/orders-api"), final(DIAGNOSIS))
+        result = await Investigator(llm=model, api_client=api, max_steps=3).run({"ticket_id": "INC-1"})
+        self.assertTrue(result.observations[0].ok)
+        self.assertEqual(api.requests[0][1], "/api/tools/files")

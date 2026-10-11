@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 from fastapi import FastAPI
@@ -19,6 +20,11 @@ from oca.schemas import (
 )
 
 log = logging.getLogger("oca.sandbox")
+
+
+RECORDED_DIFF_CHARS = 4000
+APP_ENV = "services/orders-api/config/app.env"
+MIGRATIONS_DIR = "services/orders-api/migrations"
 
 
 class SandboxError(RuntimeError):
@@ -146,7 +152,7 @@ class SandboxManager:
             raise SandboxError("The sandbox has not been prepared for this ticket (orchestrator runs prepare first)")
         return run
 
-    async def apply_patch(self, ticket_id: str, diff: str) -> dict[str, Any]:
+    async def apply_patch(self, ticket_id: str, diff: str, tool: str = "apply_patch") -> dict[str, Any]:
         run = await self._run_for(ticket_id)
         branch = self.branch_for(ticket_id)
         async with self._lock:
@@ -159,13 +165,52 @@ class SandboxManager:
                 run = await self.db.update_sandbox_run(run.id, patch_ref=branch, after=None, tests=None, passed=None)
         flags = diffcheck.risk_flags(diff) if result.applied else RiskFlags()
         await self._event(ticket_id, Actor.engineer, EventType.finding, {
-            "tool": "apply_patch", "applied": result.applied, "branch": result.branch, "commit": result.commit_sha,
-            "files_changed": result.files_changed, "error": result.error, "risk_flags": flags.model_dump()})
+            "tool": tool, "applied": result.applied, "branch": result.branch, "commit": result.commit_sha,
+            "files_changed": result.files_changed, "error": result.error, "risk_flags": flags.model_dump(),
+            "diff": diff[:RECORDED_DIFF_CHARS], "diff_truncated": len(diff) > RECORDED_DIFF_CHARS})
         out = {"evidence_ref": f"sandbox:{run.id}:patch:{result.commit_sha or 'rejected'}", **result.as_dict(),
-               "patch_ref": branch if result.applied else None, "risk_flags": flags.model_dump(), "sandbox_run_id": run.id}
+               "patch_ref": branch if result.applied else None, "risk_flags": flags.model_dump(), "sandbox_run_id": run.id,
+               "diff": diff}
         if not result.applied:
             out["hint"] = diffcheck.FORMAT_HINT
         return out
+
+    async def set_config(self, ticket_id: str, key: str, value: int) -> dict[str, Any]:
+        """Engineer tool: the server writes the diff for one KEY=value change in app.env, then applies it."""
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", key):
+            raise SandboxError(f"Invalid config key {key!r}: use UPPER_SNAKE_CASE")
+        await self._run_for(ticket_id)
+        try:
+            content = await self.runner.read_sandbox_file(APP_ENV)
+        except FileNotFoundError:
+            raise SandboxError(f"{APP_ENV} does not exist in the sandbox")
+        try:
+            diff = diffcheck.config_diff(APP_ENV, content, key, int(value))
+        except ValueError as exc:
+            raise SandboxError(str(exc))
+        out = await self.apply_patch(ticket_id, diff, tool="set_config")
+        return {**out, "key": key, "value": int(value), "path": APP_ENV}
+
+    async def create_migration(self, ticket_id: str, name: str, sql: str) -> dict[str, Any]:
+        """Engineer tool: the server numbers and writes a new migration file, then applies it as a patch."""
+        name = name.strip().removesuffix(".sql")
+        name = re.sub(r"^\d+_", "", name)
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,60}", name):
+            raise SandboxError(f"Invalid migration name {name!r}: use lower_snake_case without a number")
+        if not sql.strip():
+            raise SandboxError("Migration SQL is empty")
+        await self._run_for(ticket_id)
+        try:
+            existing = await self.runner.list_files(MIGRATIONS_DIR)
+        except FileNotFoundError:
+            existing = []
+        numbers = [int(m.group(1)) for f in existing if (m := re.match(r"(\d+)_", f.rsplit("/", 1)[-1]))]
+        path = f"{MIGRATIONS_DIR}/{max(numbers, default=0) + 1:03d}_{name}.sql"
+        if any(f.rsplit("/", 1)[-1].endswith(f"_{name}.sql") for f in existing):
+            raise SandboxError(f"A migration named {name} already exists: {existing}")
+        diff = diffcheck.new_file_diff(path, sql.strip() + "\n")
+        out = await self.apply_patch(ticket_id, diff, tool="create_migration")
+        return {**out, "path": path}
 
     async def run_tests(self, ticket_id: str) -> dict[str, Any]:
         run = await self._run_for(ticket_id)

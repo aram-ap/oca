@@ -345,8 +345,34 @@ class FakeRunner:
             raise FileNotFoundError(path)
         return files[path]
 
-    def _files(self) -> dict[str, str]:
-        env_body = "\n".join(f"{k}={v}" for k, v in self.config.items()) + "\n"
+    async def read_sandbox_file(self, rel_path: str) -> str:
+        path = check_readable_path(rel_path)
+        files = self._sandbox_files()
+        if path not in files:
+            raise FileNotFoundError(path)
+        return files[path]
+
+    async def list_files(self, rel_dir: str) -> list[str]:
+        prefix = check_readable_path(rel_dir).rstrip("/") + "/"
+        names = sorted(p for p in self._sandbox_files() if p.startswith(prefix))
+        if not names:
+            raise FileNotFoundError(rel_dir)
+        return names
+
+    def _sandbox_files(self) -> dict[str, str]:
+        """Files as the current sandbox ref sees them: the fix branch's config and migrations when on a branch."""
+        ref = (self.sandbox or {}).get("ref")
+        branch = self.branches.get(ref) if ref else None
+        if branch is None:
+            return self._files()
+        files = self._files(config=branch["config"])
+        for entry in sorted(branch["migrations"]):
+            name, _, sql = entry.partition(":")
+            files[f"services/orders-api/migrations/{name}"] = sql + "\n"
+        return files
+
+    def _files(self, config: dict | None = None) -> dict[str, str]:
+        env_body = "\n".join(f"{k}={v}" for k, v in (config or self.config).items()) + "\n"
         files = {
             "services/orders-api/config/app.env": APP_ENV_TEMPLATE.format(body=env_body),
             "services/orders-api/VERSION": self.version + "\n",

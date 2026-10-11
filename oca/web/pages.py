@@ -12,8 +12,9 @@ from oca.api import deployments as deployments_api
 from oca.api.system import ollama_loaded
 from oca.api.tickets import SSE_HEADERS, event_stream
 from oca.auth import Principal
+from oca.integrations import IntegrationError, integration_status, save_integration_settings
 from oca.schemas import Actor, EventType, Role, TicketEvent, TicketStatus
-from oca.web.common import TEMPLATES, is_fragment, render, web_user
+from oca.web.common import COMMON_TIMEZONES, TEMPLATES, is_fragment, render, set_timezone, web_user
 from oca.web.topology import topology_context
 
 router = APIRouter(dependencies=[Depends(web_user)])
@@ -75,7 +76,8 @@ def _runner_state(request: Request) -> dict[str, Any] | None:
 async def _local_ai(request: Request) -> dict[str, Any]:
     db, settings = request.app.state.db, request.app.state.settings
     return {"hardware": settings.hardware, "model": settings.model, "bytes_sent": await db.total_bytes_sent(),
-            "jira": await db.get_setting("jira", {}) or {}, "loaded": await ollama_loaded(settings)}
+            "jira": await db.get_setting("jira", {}) or {}, "slack": await db.get_setting("slack", {}) or {},
+            "loaded": await ollama_loaded(settings)}
 
 
 @router.get("/dash/local-ai")
@@ -250,20 +252,72 @@ async def logs(request: Request, user: Principal = Depends(_user)):
 
 
 @router.get("/settings")
-async def settings_page(request: Request, user: Principal = Depends(_user)):
+async def settings_page(request: Request, saved: str | None = None, user: Principal = Depends(_user)):
+    return render(request, "pages/settings.html", **await _settings_context(request), saved=saved or False)
+
+
+async def _settings_context(request: Request) -> dict[str, Any]:
     db = request.app.state.db
-    return render(request, "pages/settings.html", stored=await db.all_settings(),
-                  allowlist=request.app.state.settings.allowlist_path.read_text(encoding="utf-8"), saved=False)
+    return {"stored": await db.all_settings(), "integrations": await integration_status(request.app),
+            "timezones": COMMON_TIMEZONES,
+            "allowlist": request.app.state.settings.allowlist_path.read_text(encoding="utf-8")}
+
+
+@router.post("/settings/integrations/jira")
+async def settings_jira(request: Request, enabled: str | None = Form(None), base_url: str = Form(""), email: str = Form(""),
+                        token: str = Form(""), project: str = Form(""), issue_type: str = Form("Task"),
+                        deployment: str = Form("cloud"), outbound_detail: str = Form("minimal"),
+                        create_on_detect: str | None = Form(None), status_map: str = Form(""), jql: str = Form(""),
+                        poll_interval_s: int = Form(30), default_service: str = Form("orders-api"),
+                        user: Principal = Depends(_user)):
+    mapping = {}
+    for line in status_map.replace(",", "\n").splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() and value.strip():
+            mapping[key.strip()] = value.strip()
+    await save_integration_settings(request.app, "jira", {
+        "enabled": enabled is not None, "base_url": base_url.strip().rstrip("/"), "email": email.strip(), "token": token.strip(),
+        "project": project.strip().upper(), "issue_type": issue_type.strip() or "Task",
+        "deployment": deployment if deployment in ("cloud", "data_center") else "cloud",
+        "outbound_detail": outbound_detail if outbound_detail in ("minimal", "summary", "off") else "minimal",
+        "create_on_detect": create_on_detect is not None, "status_map": mapping, "jql": jql.strip(),
+        "poll_interval_s": max(5, poll_interval_s), "default_service": default_service.strip() or "orders-api"})
+    return RedirectResponse("/settings?saved=jira", status_code=303)
+
+
+@router.post("/settings/integrations/slack")
+async def settings_slack(request: Request, enabled: str | None = Form(None), webhook_url: str = Form(""),
+                         outbound_detail: str = Form("minimal"), user: Principal = Depends(_user)):
+    await save_integration_settings(request.app, "slack", {
+        "enabled": enabled is not None, "webhook_url": webhook_url.strip(),
+        "outbound_detail": outbound_detail if outbound_detail in ("minimal", "summary", "off") else "minimal"})
+    return RedirectResponse("/settings?saved=slack", status_code=303)
+
+
+@router.post("/settings/integrations/{name}/test")
+async def settings_integration_test(request: Request, name: str, user: Principal = Depends(_user)):
+    integration = getattr(request.app.state, "integrations", {}).get(name)
+    if integration is None:
+        raise HTTPException(404, "Unknown integration")
+    try:
+        result, error = await integration.test(), None
+    except IntegrationError as exc:
+        result, error = None, str(exc)
+    return render(request, "fragments/integration_test.html", name=name, result=result, error=error)
 
 
 @router.post("/settings")
 async def settings_save(request: Request, require_human_approval: str | None = Form(None),
                         risk_threshold: int = Form(30), cooldown_s: int = Form(120), blocklist: str = Form(""),
-                        user: Principal = Depends(_user)):
+                        timezone: str = Form("UTC"), user: Principal = Depends(_user)):
     db = request.app.state.db
     await db.set_setting("require_human_approval", require_human_approval is not None)
+    try:
+        set_timezone(request.app, timezone.strip())
+        await db.set_setting("timezone", timezone.strip())
+    except ValueError:
+        pass  # keep the previous zone; the page shows what is in effect
     await db.set_setting("risk_threshold", max(0, min(100, risk_threshold)))
     await db.set_setting("cooldown_s", max(0, cooldown_s))
     await db.set_setting("blocklist", [b.strip() for b in blocklist.replace("\n", ",").split(",") if b.strip()])
-    return render(request, "pages/settings.html", stored=await db.all_settings(),
-                  allowlist=request.app.state.settings.allowlist_path.read_text(encoding="utf-8"), saved=True)
+    return render(request, "pages/settings.html", **await _settings_context(request), saved=True)

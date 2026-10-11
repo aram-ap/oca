@@ -102,9 +102,13 @@ async def get_metrics(service: Service, runner=Depends(get_runner), db: Database
 
 @router.get("/code")
 async def get_code(path: str = Query(..., min_length=1), runner=Depends(get_runner),
-                   _: Principal = Depends(require(Role.investigator, Role.engineer))):
+                   principal: Principal = Depends(require(Role.investigator, Role.engineer))):
+    """The Investigator reads production; the Engineer reads the sandbox's fix branch once one is up."""
     try:
-        content = await runner.read_file(path)
+        if principal.has(Role.engineer) and not principal.has(Role.investigator):
+            content = await runner.read_sandbox_file(path)
+        else:
+            content = await runner.read_file(path)
     except PermissionError as exc:
         raise HTTPException(403, str(exc))
     except FileNotFoundError:
@@ -114,19 +118,64 @@ async def get_code(path: str = Query(..., min_length=1), runner=Depends(get_runn
             "lines": content.count("\n") + 1}
 
 
+@router.get("/files")
+async def list_files(path: str = Query(..., min_length=1), runner=Depends(get_runner),
+                     _: Principal = Depends(require(Role.investigator, Role.engineer))):
+    """List files under a repository directory (the sandbox's view when one is up)."""
+    try:
+        files = await runner.list_files(path)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except FileNotFoundError:
+        raise HTTPException(404, f"No such directory: {path}")
+    return {"evidence_ref": f"files:{path.rstrip('/')}", "path": path, "files": files, "count": len(files)}
+
+
+GIT_REF = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]{0,99}")
+LABEL_DEPLOY = re.compile(r"deploy\s+(\d+)")
+LABEL_RANGE = re.compile(r"\(?([0-9a-fA-F]{6,40}\.\.[0-9a-fA-F]{6,40})\)?")
+
+
+def _normalise_ref(ref: str | None) -> str | None:
+    """Models copy evidence labels such as 'git:diff:deploy 26 (abc..def)' back as refs; accept them."""
+    if ref is None:
+        return None
+    ref = ref.strip()
+    for prefix in ("git:diff:", "git:history:", "diff:", "deploy:"):
+        if ref.lower().startswith(prefix):
+            ref = ref[len(prefix):].strip()
+    if match := LABEL_DEPLOY.search(ref):
+        return match.group(1)
+    if match := LABEL_RANGE.search(ref):
+        return match.group(1)
+    return ref
+
+
+def _is_maintenance(record) -> bool:
+    note = (getattr(record, "note", None) or "").lower()
+    return "reset to baseline" in note or note.startswith("reset")
+
+
 @router.get("/git")
 async def get_git(operation: Literal["history", "diff"], ref: str | None = Query(None, min_length=1, max_length=120),
                   runner=Depends(get_runner), _: Principal = Depends(require(Role.investigator, Role.engineer))):
+    ref = _normalise_ref(ref)
+    if ref is not None and not GIT_REF.fullmatch(ref):
+        raise HTTPException(404, f"Unusable ref {ref!r}. Use a deploy id or sha from operation=history, a..b, or fix/<ticket>")
     try:
         deployments = await runner.deployments(limit=20)
         if operation == "history":
             commits = await runner.git_log("main", 20)
-            return {"evidence_ref": f"git:history:{_stamp()}", "deployments": [d.as_dict() for d in deployments],
-                    "commits": [c.as_dict() for c in commits]}
+            records = [{**d.as_dict(), "maintenance": _is_maintenance(d)} for d in deployments]
+            latest = next((r for r in records if not r["maintenance"]), records[0] if records else None)
+            return {"evidence_ref": f"git:history:{_stamp()}", "latest_deployment": latest,
+                    "note": "latest_deployment is the newest change to investigate; maintenance deploys (resets to "
+                            "baseline) are not suspects. Diff it with operation=diff, ref=<its git_sha>.",
+                    "deployments": records, "commits": [c.as_dict() for c in commits]}
         target = None
         if ref is None and deployments:
             target = deployments[0]
-        elif ref is not None:
+        elif ref is not None and ".." not in ref:
             for d in deployments:  # deploy id, full sha, or a sha prefix either way round
                 if ref == str(d.deploy_id) or ref == d.git_sha or (len(ref) >= 6 and (d.git_sha.startswith(ref) or ref.startswith(d.git_sha))):
                     target = d
@@ -179,6 +228,16 @@ class TicketIn(BaseModel):
     ticket_id: str = Field(min_length=1)
 
 
+class ConfigIn(TicketIn):
+    key: str = Field(min_length=1, max_length=64)
+    value: int
+
+
+class MigrationIn(TicketIn):
+    name: str = Field(min_length=1, max_length=80)
+    sql: str = Field(min_length=1, max_length=20_000)
+
+
 class LoadtestIn(TicketIn):
     requests: int | None = Field(None, ge=1, le=10000)
 
@@ -193,6 +252,24 @@ def _sandbox_error(exc: Exception) -> HTTPException:
 async def sandbox_patch(body: PatchIn, sandbox=Depends(get_sandbox), _: Principal = Depends(require(Role.engineer))):
     try:
         return await sandbox.apply_patch(body.ticket_id, body.diff)
+    except (SandboxError, RunnerError) as exc:
+        raise _sandbox_error(exc)
+
+
+@router.post("/sandbox/config")
+async def sandbox_config(body: ConfigIn, sandbox=Depends(get_sandbox), _: Principal = Depends(require(Role.engineer))):
+    """Set KEY=value in app.env on the fix branch; the server writes and applies the diff."""
+    try:
+        return await sandbox.set_config(body.ticket_id, body.key, body.value)
+    except (SandboxError, RunnerError) as exc:
+        raise _sandbox_error(exc)
+
+
+@router.post("/sandbox/migration")
+async def sandbox_migration(body: MigrationIn, sandbox=Depends(get_sandbox), _: Principal = Depends(require(Role.engineer))):
+    """Create the next numbered migration file on the fix branch; the server writes and applies the diff."""
+    try:
+        return await sandbox.create_migration(body.ticket_id, body.name, body.sql)
     except (SandboxError, RunnerError) as exc:
         raise _sandbox_error(exc)
 

@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, MutableMapping
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from oca.schemas import Role
 
@@ -73,6 +74,14 @@ class Settings:
     model_keep_alive: str = "5m"
     tool_timeout_s: float = 30.0
     hardware: str = "ASUS Ascent GX10"
+    public_url: str = ""                    # dashboard links in Jira/Slack messages; defaults to api_url
+    timezone: str = "UTC"                   # IANA zone for dashboard timestamps (seeds the ``timezone`` setting)
+    jira_url: str = ""                      # OCA_JIRA_* seed the ``jira`` settings row; the settings page wins afterwards
+    jira_email: str = ""
+    jira_token: str = field(default="", repr=False)
+    jira_project: str = ""
+    slack_webhook_url: str = field(default="", repr=False)
+    outbox_poll_s: float = 2.0
     tokens: dict[Role, str] = field(default_factory=lambda: {
         Role.investigator: "agent-investigator", Role.engineer: "agent-engineer",
         Role.guardian: "agent-guardian", Role.orchestrator: "orchestrator",
@@ -80,7 +89,7 @@ class Settings:
     admin_user: str = "admin"
     admin_password: str = "admin"
     secret_key: str = "dev-secret-change-me"
-    require_human_approval: bool = True
+    require_human_approval: bool = False   # D3 revised: autonomous by default; switch on in Settings
     risk_threshold: int = 30
     check_interval_s: int = 10
     scheduler_tick_s: float = 2.0
@@ -99,6 +108,14 @@ class Settings:
             raise ValueError("Every OCA_*_TOKEN must be set and distinct")
         if self.risk_threshold < 0 or self.risk_threshold > 100:
             raise ValueError("OCA_RISK_THRESHOLD must be 0-100")
+        if not self.public_url:
+            object.__setattr__(self, "public_url", self.api_url)
+        if self.outbox_poll_s <= 0:
+            raise ValueError("OCA_OUTBOX_POLL_S must be positive")
+        try:
+            ZoneInfo(self.timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError(f"OCA_TIMEZONE {self.timezone!r} is not an IANA time zone")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None, dotenv: str | None = ".env") -> "Settings":
@@ -131,11 +148,17 @@ class Settings:
             model_keep_alive=get("MODEL_KEEP_ALIVE", defaults.model_keep_alive),
             tool_timeout_s=float(get("TOOL_TIMEOUT_S", str(defaults.tool_timeout_s))),
             hardware=get("HARDWARE", defaults.hardware),
+            public_url=get("PUBLIC_URL", "").rstrip("/"),
+            timezone=get("TIMEZONE", defaults.timezone),
+            jira_url=get("JIRA_URL", "").rstrip("/"), jira_email=get("JIRA_EMAIL", ""),
+            jira_token=get("JIRA_TOKEN", ""), jira_project=get("JIRA_PROJECT", ""),
+            slack_webhook_url=get("SLACK_WEBHOOK_URL", ""),
+            outbox_poll_s=float(get("OUTBOX_POLL_S", str(defaults.outbox_poll_s))),
             tokens=tokens,
             admin_user=get("ADMIN_USER", defaults.admin_user),
             admin_password=get("ADMIN_PASSWORD", defaults.admin_password),
             secret_key=get("SECRET_KEY", defaults.secret_key),
-            require_human_approval=_bool(get("REQUIRE_HUMAN_APPROVAL", "true")),
+            require_human_approval=_bool(get("REQUIRE_HUMAN_APPROVAL", "false")),
             risk_threshold=int(get("RISK_THRESHOLD", str(defaults.risk_threshold))),
             check_interval_s=int(get("CHECK_INTERVAL_S", str(defaults.check_interval_s))),
             scheduler_tick_s=float(get("SCHEDULER_TICK_S", str(defaults.scheduler_tick_s))),

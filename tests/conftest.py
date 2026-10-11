@@ -19,7 +19,7 @@ def anyio_backend():
 @pytest.fixture
 def settings(tmp_path) -> Settings:
     return Settings(db_path=tmp_path / "oca.db", data_dir=tmp_path / "data", runner="dry",
-                    autostart_pipeline=False, scheduler_tick_s=0.05, check_interval_s=3600,
+                    autostart_pipeline=False, scheduler_tick_s=0.05, check_interval_s=3600, require_human_approval=True,
                     stage_delay_s=0.0, verify_runs=2, verify_interval_s=0.0, loadtest_requests=50)
 
 

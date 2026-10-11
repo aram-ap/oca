@@ -1,34 +1,46 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import HTTPException, Request
 from fastapi.templating import Jinja2Templates
+from jinja2 import pass_context
 
 from oca.auth import Principal, session_principal
+from oca.tz import COMMON_TIMEZONES, set_timezone  # noqa: F401 - re-exported for the web layer
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / "templates"))
 
 
-def _fmt_ts(value) -> str:
+def _localize(ctx, value):
     if isinstance(value, str):
         try:
             value = datetime.fromisoformat(value)
         except ValueError:
             return value
+    if not isinstance(value, datetime):
+        return value
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    request = ctx.get("request") if ctx is not None else None
+    tz = getattr(getattr(request, "app", None), "state", None)
+    tz = getattr(tz, "tz", None) or timezone.utc
+    return value.astimezone(tz)
+
+
+@pass_context
+def _fmt_ts(ctx, value) -> str:
+    value = _localize(ctx, value)
     if isinstance(value, datetime):
         return value.strftime("%H:%M:%S")
     return "" if value is None else str(value)
 
 
-def _fmt_dt(value) -> str:
-    if isinstance(value, str):
-        try:
-            value = datetime.fromisoformat(value)
-        except ValueError:
-            return value
+@pass_context
+def _fmt_dt(ctx, value) -> str:
+    value = _localize(ctx, value)
     if isinstance(value, datetime):
         return value.strftime("%Y-%m-%d %H:%M:%S")
     return "" if value is None else str(value)
@@ -66,4 +78,5 @@ def render(request: Request, template: str, **context):
     context.setdefault("settings", settings)
     context.setdefault("user", getattr(request.state, "user", None))
     context.setdefault("path", request.url.path)
+    context.setdefault("tz_name", getattr(request.app.state, "tz_name", "UTC"))
     return TEMPLATES.TemplateResponse(request, template, context)

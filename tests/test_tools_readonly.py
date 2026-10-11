@@ -65,3 +65,27 @@ async def test_dev_inject_only_in_dry_mode(client, auth):
     assert (await client.post("/api/dev/reset", headers=auth(Role.admin))).json()["reset"] is True
     calls = (await client.get("/api/dev/runner-calls", headers=auth(Role.admin))).json()
     assert calls["mode"] == "dry" and isinstance(calls["calls"], list)
+
+
+async def test_git_refs_accept_evidence_labels_and_flag_maintenance(app, client, auth):
+    runner, eng = app.state.runner, auth(Role.engineer)
+    runner.inject("timeout")
+    history = (await client.get("/api/tools/git", params={"operation": "history"}, headers=eng)).json()
+    latest = history["latest_deployment"]
+    assert latest["git_sha"] == history["deployments"][0]["git_sha"] and latest["maintenance"] is False
+    diff = (await client.get("/api/tools/git", params={"operation": "diff", "ref": latest["git_sha"]}, headers=eng)).json()
+    label = diff["evidence_ref"]  # git:diff:deploy N (prev..sha)
+    assert label.startswith("git:diff:deploy ")
+    for copied in (label, label.removeprefix("git:diff:"), f"deploy {latest['deploy_id']}", label.split("(")[1].rstrip(")")):
+        again = await client.get("/api/tools/git", params={"operation": "diff", "ref": copied}, headers=eng)
+        assert again.status_code == 200 and again.json()["diff"] == diff["diff"], copied
+    bad = await client.get("/api/tools/git", params={"operation": "diff", "ref": "deploy (what is this)"}, headers=eng)
+    assert bad.status_code == 404 and "Unusable ref" in bad.json()["detail"]
+    assert (await client.get("/api/tools/git", params={"operation": "diff", "ref": "--output=/tmp/x"}, headers=eng)).status_code == 404
+    from oca.api.tools import _is_maintenance, _normalise_ref
+    from oca.fakeco.runner import DeployRecord
+    reset = DeployRecord(9, "t", "aaaaaaaaaa", "bbbbbbbbbb", "1.3.0", "ops", "Baseline", [], "reset to baseline")
+    assert _is_maintenance(reset) and not _is_maintenance(history["deployments"][0] and reset.__class__(
+        *[*reset.__dict__.values()][:-1], None))
+    assert _normalise_ref("git:diff:deploy 26 (59d2e30336..9114e82260)") == "26"
+    assert _normalise_ref("(59d2e30336..9114e82260)") == "59d2e30336..9114e82260" and _normalise_ref(" 1e30750a67 ") == "1e30750a67"
